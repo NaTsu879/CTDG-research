@@ -15,6 +15,7 @@ from models.TCL import TCL
 from models.GraphMixer import GraphMixer
 from models.DyGFormer import DyGFormer
 from models.CRAFT import CRAFT
+from models.CRAFTV2 import CRAFTV2
 from models.modules import MergeLayer, MulMergeLayer, BPRLoss
 from utils.utils import set_random_seed, convert_to_gpu, get_parameter_sizes, create_optimizer
 from utils.utils import get_neighbor_sampler, NegativeEdgeSampler
@@ -28,7 +29,7 @@ from models.SASRec import SASRec
 from models.SGNNHN import SGNNHN
 def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbor_sampler, train_neg_edge_sampler, train_data, optimizer, loss_func, full_neighbor_sampler, val_data, val_idx_data_loader, val_neg_edge_sampler, full_data):
         model.train()
-        if args.model_name not in ['CRAFT']:
+        if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2']:
             model[0].set_neighbor_sampler(train_neighbor_sampler)
         
         if args.model_name in ['JODIE', 'DyRep', 'TGN']:
@@ -117,7 +118,7 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                 batch_dst_node_embeddings = dst_node_embeddings[:len(pos_item)]
                 batch_neg_dst_node_embeddings = dst_node_embeddings[len(pos_item):]
                 batch_neg_src_node_embeddings = batch_src_node_embeddings
-            elif args.model_name in ['CRAFT']:
+            elif args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2']:
                 src_neighb_seq, _, src_neighb_interact_times = train_neighbor_sampler.get_historical_neighbors_left(node_ids=batch_src_node_ids, node_interact_times=batch_node_interact_times, num_neighbors=args.num_neighbors)
                 neighbor_num=(src_neighb_seq!=0).sum(axis=1)
                 if neighbor_num.sum() == 0:
@@ -137,7 +138,7 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                                                                 dst_last_update_times=dst_last_update_time)
             else:
                 raise ValueError(f"Wrong value for model_name {args.model_name}!")
-            if args.model_name not in ['CRAFT']:
+            if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2']:
                 if args.loss in ['BPR']:
                     positive_probabilities = model[1](
                         input_1=batch_src_node_embeddings, input_2=batch_dst_node_embeddings).squeeze(dim=-1)
@@ -244,15 +245,41 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
         dynamic_backbone = SGNNHN(args.embedding_size, args.step, args.device, args.scale, args.item_size, args.dropout, args.num_neighbors, loss_type=args.loss)
     elif args.model_name in ['CRAFT']:
         dynamic_backbone = CRAFT(args.num_layers, args.num_heads, args.embedding_size, args.hidden_dropout, args.attn_dropout_prob, args.hidden_act, args.layer_norm_eps, args.initializer_range, args.item_size, max_seq_length = args.num_neighbors, device=args.device, loss_type=args.loss, use_pos=args.use_pos, input_cat_time_intervals=args.input_cat_time_intervals, output_cat_time_intervals=args.output_cat_time_intervals, output_cat_repeat_times=args.output_cat_repeat_times, num_output_layer=args.num_output_layer, emb_dropout_prob=args.emb_dropout_prob, skip_connection=args.skip_connection)
+    elif args.model_name in ['CRAFTV2', 'CRAFTv2', 'craftv2']:
+        top_k_intent = getattr(args, 'top_k_intent', args.num_neighbors)
+        if top_k_intent > args.num_neighbors:
+            top_k_intent = args.num_neighbors
+        dynamic_backbone = CRAFTV2(
+            n_layers=args.num_layers,
+            n_heads=args.num_heads,
+            hidden_size=args.embedding_size,
+            hidden_dropout_prob=args.hidden_dropout,
+            attn_dropout_prob=args.attn_dropout_prob,
+            hidden_act=args.hidden_act,
+            layer_norm_eps=args.layer_norm_eps,
+            initializer_range=args.initializer_range,
+            n_nodes=args.item_size,
+            max_seq_length=args.num_neighbors,
+            top_k_intent=top_k_intent,
+            device=args.device,
+            loss_type=args.loss,
+            use_pos=args.use_pos,
+            input_cat_time_intervals=args.input_cat_time_intervals,
+            output_cat_time_intervals=args.output_cat_time_intervals,
+            output_cat_repeat_times=args.output_cat_repeat_times,
+            num_output_layer=args.num_output_layer,
+            emb_dropout_prob=args.emb_dropout_prob,
+            skip_connection=args.skip_connection
+        )
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")
     if args.merge in ['cat']:
         link_predictor = MergeLayer(input_dim1=args.output_dim, input_dim2=args.output_dim, hidden_dim=args.output_dim, output_dim=1)
     elif args.merge in ['mul']:
         link_predictor = MulMergeLayer(scale=args.scale)
-    if args.model_name in ['CRAFT', 'SASRec', 'SGNNHN']:
+    if args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'SASRec', 'SGNNHN']:
         dynamic_backbone.set_min_idx(src_min_idx=args.src_min_idx, dst_min_idx=args.dst_min_idx)
-    if args.model_name not in ['CRAFT']:
+    if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2']:
         model = nn.Sequential(dynamic_backbone, link_predictor)
     else:
         model = dynamic_backbone

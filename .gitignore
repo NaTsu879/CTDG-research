@@ -67,3 +67,8 @@ test*
 *.so
 *.csv
 */build/*
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/

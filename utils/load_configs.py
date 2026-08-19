@@ -19,6 +19,7 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--output_dim', type=int, default=172, help='dimension of the output embedding')
     parser.add_argument('--embedding_size', type=int, default=172, help='dimension of the output embedding')
     parser.add_argument('--num_neighbors', type=int, default=20, help='number of neighbors to sample for each node')
+    parser.add_argument('--top_k_intent', type=int, default=20, help='top K most similar neighbors to keep based on behavioral intent in CRAFTV2')
     parser.add_argument('--save_model_path', type=str, default='./saved_models/')
     parser.add_argument('--dataset_path', type=str, default='./data/')
     parser.add_argument('--sample_neighbor_strategy', type=str, default='recent', choices=['uniform', 'recent', 'time_interval_aware'], help='how to sample historical neighbors')
