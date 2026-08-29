@@ -54,7 +54,6 @@ data/
 *.md
 collected_results*/
 dist/
-*.txt
 *.sh
 tgb-seq_processed/
 test_preprocess.ipynb

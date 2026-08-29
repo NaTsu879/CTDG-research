@@ -1,0 +1,23 @@
+# Core Deep Learning & PyTorch
+torch>=2.0.0
+
+# Graph Neural Network Framework
+torch_geometric>=2.3.0
+
+# Scientific Computing & Data Processing
+numpy>=1.22.0
+pandas>=1.5.0
+scikit-learn>=1.0.0
+networkx>=2.8.0
+pyarrow>=10.0.0
+
+# Utilities & Visualization
+tqdm>=4.64.0
+matplotlib>=3.5.0
+python-dateutil>=2.8.0
+requests>=2.28.0
+clint>=0.5.1
+huggingface_hub>=0.15.0
+
+# Optional / Knowledge Graph Dataset Mining
+qwikidata>=0.4.0

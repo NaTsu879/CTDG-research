@@ -90,6 +90,7 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--emb_dropout_prob', type=float, default=0.1, help='dropout rate for embedding')
     parser.add_argument('--use_mrr_val', action='store_true', default=False, help='whether to use mrr for validation')
     parser.add_argument('--skip_connection', action='store_true', default=False, help='whether to use skip connection in CRAFT')
+    parser.add_argument('--fusion_mode', type=str, default='projected', choices=['projected', 'simple'], help='fusion mode for CRAFTV4 (projected or simple)')
     try:
         args = parser.parse_args()
         args.device = f'cuda:{args.gpu}' if torch.cuda.is_available() and args.gpu >= 0 else 'cpu'
