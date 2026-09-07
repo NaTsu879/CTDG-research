@@ -4,22 +4,41 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
+from tqdm import tqdm
 
 
-URL = "http://snap.stanford.edu/jodie/wikipedia.csv"
+URL = "https://snap.stanford.edu/jodie/wikipedia.csv"
 DATA_DIR = Path("./data/wikipedia")
 
 
 def download_file(url: str, target: Path):
     target.parent.mkdir(parents=True, exist_ok=True)
+    temp_target = target.with_suffix(target.suffix + ".tmp")
+    headers = {"User-Agent": "Mozilla/5.0"}
     print(f"Downloading {url} -> {target}")
-    with requests.get(url, stream=True, timeout=120) as r:
-        r.raise_for_status()
-        with open(target, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 64):
-                if chunk:
-                    f.write(chunk)
-    print("Download complete")
+    try:
+        with requests.get(url, stream=True, timeout=120, headers=headers) as r:
+            r.raise_for_status()
+            total_size = int(r.headers.get("content-length", 0))
+            chunk_size = 1024 * 1024  # 1 MB chunk
+            with open(temp_target, "wb") as f, tqdm(
+                desc=target.name,
+                total=total_size,
+                unit="iB",
+                unit_scale=True,
+                unit_divisor=1024,
+                ncols=100
+            ) as bar:
+                for chunk in r.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        size = f.write(chunk)
+                        bar.update(size)
+        temp_target.replace(target)
+        print("Download complete")
+    except Exception:
+        if temp_target.exists():
+            temp_target.unlink()
+        raise
 
 
 def preprocess(raw_csv_path: str):

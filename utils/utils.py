@@ -539,6 +539,27 @@ def get_neighbor_sampler(data: Data, sample_neighbor_strategy: str = 'uniform', 
 
     return NeighborSamplerOrigin(adj_list=adj_list, sample_neighbor_strategy=sample_neighbor_strategy, time_scaling_factor=time_scaling_factor, seed=seed)
 
+def get_dst_neighbors(neighbor_sampler: NeighborSampler, test_dst: torch.Tensor, batch_node_interact_times: np.ndarray, num_neighbors: int = 1):
+    """
+    get the historical neighbors of each candidate destination node before the current prediction time
+    :param neighbor_sampler: NeighborSampler, neighbor sampler
+    :param test_dst: Tensor, shape (batch_size, num_candidates), the candidate destination nodes
+    :param batch_node_interact_times: ndarray, shape (batch_size, ), the current prediction times
+    :param num_neighbors: int, number of neighbors to sample for each candidate destination node
+    :return: dst_neighb_seq and dst_neighb_interact_times, both with shape (batch_size * num_candidates, num_neighbors),
+    and dst_last_update_times with shape (batch_size, num_candidates)
+    """
+    dst_neighb_seq, _, dst_neighb_interact_times = neighbor_sampler.get_historical_neighbors_left(
+        node_ids=test_dst.flatten(),
+        node_interact_times=np.broadcast_to(batch_node_interact_times[:, np.newaxis], (len(batch_node_interact_times), test_dst.shape[1])).flatten(),
+        num_neighbors=num_neighbors)
+    # the neighbors are placed at the left side and sorted by time, hence the last non-zero entry of each row is the latest interaction
+    has_neighbor = dst_neighb_seq != 0
+    last_neighbor_idx = num_neighbors - 1 - np.argmax(has_neighbor[:, ::-1], axis=1)
+    dst_last_update_times = dst_neighb_interact_times[np.arange(len(dst_neighb_seq)), last_neighbor_idx]
+    dst_last_update_times[~has_neighbor.any(axis=1)] = -100000
+    return dst_neighb_seq, dst_neighb_interact_times, dst_last_update_times.reshape(len(test_dst), -1)
+
 class NeighborSamplerWindow(NeighborSampler):
     def __init__(self,num_nodes,fix_window_size=20, device: str = 'cpu',undirected=True, time_scaling_factor=0.1):
         super().__init__()
