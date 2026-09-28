@@ -91,6 +91,13 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--use_mrr_val', action='store_true', default=False, help='whether to use mrr for validation')
     parser.add_argument('--skip_connection', action='store_true', default=False, help='whether to use skip connection in CRAFT')
     parser.add_argument('--fusion_mode', type=str, default='projected', choices=['projected', 'simple'], help='fusion mode for CRAFTV4 (projected or simple)')
+    parser.add_argument('--num_delay_bases', type=int, default=8, help='number of delay basis functions in MYMODEL, the first one is the constant basis')
+    parser.add_argument('--num_response_channels', type=int, default=4, help='number of diagonal metrics per delay basis in MYMODEL')
+    parser.add_argument('--num_interests', type=int, default=4, help='number of interest prototypes of the novelty channel in MYMODEL')
+    parser.add_argument('--delay_readout', type=str, default='mlp', choices=['mlp', 'linear'], help='readout on the excitation profile in MYMODEL')
+    parser.add_argument('--delay_basis', type=str, default='gaussian', choices=['gaussian', 'exponential'], help='shape of the delay basis in MYMODEL, exponential reduces the field to decaying memory')
+    parser.add_argument('--no_self_dynamics', action='store_true', default=False, help='ablate the recurrence profile of the candidate in MYMODEL')
+    parser.add_argument('--no_novelty', action='store_true', default=False, help='ablate the interest prototypes in MYMODEL')
     try:
         args = parser.parse_args()
         args.device = f'cuda:{args.gpu}' if torch.cuda.is_available() and args.gpu >= 0 else 'cpu'
@@ -271,6 +278,33 @@ def load_link_prediction_best_configs(args: argparse.Namespace):
             args.dropout = 0.0
         else:
             args.dropout = 0.1
+    elif args.model_name in ['MYMODEL', 'MyModel', 'mymodel']:
+        # the per-dataset budget reported for CRAFT, so that MYMODEL is trained under the same settings:
+        # (num_neighbors, hidden_dropout, attn_dropout_prob, emb_dropout_prob, num_layers, batch_size, embedding_size)
+        mymodel_configs = {
+            'uci': (30, 0.3, 0.2, 0.2, 1, 200, 64),
+            'wikipedia': (120, 0.1, 0.1, 0.2, 1, 200, 64),
+            'reddit': (120, 0.1, 0.2, 0.1, 1, 200, 64),
+            'mooc': (30, 0.1, 0.1, 0.1, 2, 200, 64),
+            'Flights': (90, 0.2, 0.2, 0.2, 1, 200, 64),
+            'lastfm': (120, 0.1, 0.1, 0.1, 1, 200, 64),
+            'GoogleLocal': (60, 0.2, 0.1, 0.2, 2, 200, 128),
+            'Flickr': (90, 0.1, 0.1, 0.2, 1, 400, 128),
+            'YouTube': (90, 0.2, 0.2, 0.2, 2, 400, 128),
+            'Taobao': (60, 0.2, 0.1, 0.2, 2, 400, 128),
+            'Yelp': (60, 0.2, 0.2, 0.2, 2, 400, 128),
+            'ML-20M': (60, 0.2, 0.2, 0.2, 1, 400, 128),
+            'WikiLink': (60, 0.2, 0.2, 0.2, 1, 400, 128),
+            'tgbl-review': (120, 0.1, 0.2, 0.1, 1, 200, 128),
+            'tgbl-coin': (60, 0.2, 0.2, 0.2, 1, 200, 128),
+            'tgbl-comment': (60, 0.2, 0.1, 0.2, 1, 200, 128),
+            'tgbl-flight': (90, 0.2, 0.2, 0.2, 1, 200, 128),
+        }
+        if args.dataset_name in mymodel_configs:
+            args.num_neighbors, args.hidden_dropout, args.attn_dropout_prob, args.emb_dropout_prob, \
+                args.num_layers, args.batch_size, args.embedding_size = mymodel_configs[args.dataset_name]
+        args.sample_neighbor_strategy = 'recent'
+        args.loss = 'BPR'
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")
 
