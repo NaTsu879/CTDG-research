@@ -75,13 +75,15 @@ class MYMODEL(torch.nn.Module):
                  input_cat_time_intervals=False, output_cat_time_intervals=True, output_cat_repeat_times=True,
                  num_output_layer=1, emb_dropout_prob=0.1, skip_connection=False, num_dst_neighbors=20,
                  num_decay_kernels=4, use_structural_bias=True, use_structural_features=True,
-                 time_scale_momentum=0.99):
+                 use_inner_product=True, time_scale_momentum=0.99):
         """
         the arguments up to skip_connection are CRAFT's, with the same meaning
         :param num_dst_neighbors: int, number of recent neighbors of each candidate used for co-occurrence
         :param num_decay_kernels: int, number of exponential kernels of the recency-weighted overlap
         :param use_structural_bias: bool, whether the co-occurrence counts bias the attention logits
-        :param use_structural_features: bool, whether the overlap readout is concatenated at the output
+        :param use_structural_features: bool, whether the overlap readout corrects the logit
+        :param use_inner_product: bool, whether the scaled inner product term is added to the logit
+        with all three of these off the model is CRAFT, parameter for parameter and value for value
         """
         super(MYMODEL, self).__init__()
         self.n_layers = n_layers
@@ -103,6 +105,7 @@ class MYMODEL(torch.nn.Module):
         self.num_decay_kernels = num_decay_kernels
         self.use_structural_bias = use_structural_bias
         self.use_structural_features = use_structural_features
+        self.use_inner_product = use_inner_product
         self.time_scale_momentum = time_scale_momentum
         self.eps = 1e-6
         self.device = device
@@ -145,14 +148,15 @@ class MYMODEL(torch.nn.Module):
             # and whether the candidate has any history
             self.num_structural_features = self.num_decay_kernels + 4
             self.log_tau = nn.Parameter(torch.linspace(math.log(0.05), math.log(5.0), self.num_decay_kernels))
-            self.structural_projection = MLP(num_layers=2, input_dim=self.num_structural_features,
-                                             hidden_dim=self.hidden_size, output_dim=self.hidden_size,
-                                             dropout=self.hidden_dropout_prob, use_act=True, skip_connection=False)
-            self.LayerNorm_structural = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
-            # the slice of the concatenated output vector that the structural block occupies
-            self.structural_slice = slice(output_dim, output_dim + self.hidden_size)
-            output_dim += self.hidden_size
-        self.dot_weight = nn.Parameter(torch.zeros(1))
+            # the overlap readout is an additive correction to the logit, not a block concatenated into the
+            # output layer: the backbone keeps CRAFT's exact width, initialization and gradient path, and the
+            # correction is switched on by a scalar that starts at zero
+            self.structural_head = MLP(num_layers=2, input_dim=self.num_structural_features,
+                                       hidden_dim=self.hidden_size, output_dim=1,
+                                       dropout=self.hidden_dropout_prob, use_act=True, skip_connection=False)
+            self.structural_gate = nn.Parameter(torch.zeros(1))
+        if self.use_inner_product:
+            self.dot_weight = nn.Parameter(torch.zeros(1))
 
         self.output_layer = MLP(num_layers=num_output_layer, input_dim=output_dim, hidden_dim=output_dim,
                                 output_dim=1, dropout=self.hidden_dropout_prob, use_act=True,
@@ -193,15 +197,13 @@ class MYMODEL(torch.nn.Module):
 
     def _init_at_craft(self):
         """
-        zero every added term, so that the model starts exactly at CRAFT-R
+        zero every added term, so that the model starts exactly at CRAFT-R: the attention bias vanishes and
+        both logit corrections are switched off by their gates
         """
         with torch.no_grad():
             if self.use_structural_bias:
                 self.structural_bias.weight.zero_()
                 self.structural_bias.bias.zero_()
-            if self.use_structural_features:
-                # the output layer ignores the structural block until it learns to use it
-                self.output_layer.lins[0].weight[:, self.structural_slice].zero_()
 
     def _get_time_scale(self, elapsed_times: torch.Tensor, valid_mask: torch.Tensor):
         """
@@ -270,7 +272,8 @@ class MYMODEL(torch.nn.Module):
         valid_mask = src_neighb_seq != 0
 
         src_elapsed = (cur_times.float().view(-1, 1) - neighbors_interact_times.float()).clamp(min=0.0)
-        time_scale = self._get_time_scale(src_elapsed, valid_mask)
+        # only the overlap readout needs the normalized elapsed times, so nothing is touched when it is ablated
+        time_scale = self._get_time_scale(src_elapsed, valid_mask) if self.use_structural_features else None
 
         # ---- CRAFT: elapsed time of the candidate's last interaction ----
         if self.output_cat_time_intervals:
@@ -325,7 +328,10 @@ class MYMODEL(torch.nn.Module):
         if self.output_cat_repeat_times:
             output = torch.cat([output, repeat_times_feat], dim=-1).float()
 
-        # ---- recency-weighted common-neighbor readout ----
+        # the backbone logit, computed exactly as CRAFT computes it
+        logits = self.output_layer(output.view(-1, output.shape[-1])).view(batch_size, num_candidates)
+
+        # ---- additive correction from the recency-weighted common-neighbor readout ----
         if self.use_structural_features:
             is_shared = (shared_counts > 0).float()
             tau = self.log_tau.exp().clamp(min=1e-3)
@@ -341,13 +347,12 @@ class MYMODEL(torch.nn.Module):
                 torch.log1p(dst_seq_len).unsqueeze(-1),
                 (dst_seq_len > 0).float().unsqueeze(-1),
             ], dim=-1)
-            structural_feat = self.dropout(self.LayerNorm_structural(self.structural_projection(structural_features)))
-            output = torch.cat([output, structural_feat], dim=-1).float()
+            logits = logits + self.structural_gate * self.structural_head(structural_features).squeeze(dim=-1)
 
-        logits = self.output_layer(output.view(-1, output.shape[-1])).view(batch_size, num_candidates)
         # SASRec / SGNN-HN style scaled inner product between the candidate and its context
-        logits = logits + self.dot_weight * (test_dst_emb * context[..., :self.hidden_size]).sum(dim=-1) / \
-            math.sqrt(self.hidden_size)
+        if self.use_inner_product:
+            logits = logits + self.dot_weight * (test_dst_emb * context[..., :self.hidden_size]).sum(dim=-1) / \
+                math.sqrt(self.hidden_size)
         return logits
 
     def get_attention_mask(self, mask_a, mask_b):

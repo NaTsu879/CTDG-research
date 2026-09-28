@@ -95,6 +95,7 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--num_decay_kernels', type=int, default=4, help='number of exponential kernels of the recency-weighted overlap in MYMODEL')
     parser.add_argument('--no_structural_bias', action='store_true', default=False, help='ablate the co-occurrence bias on the attention logits in MYMODEL')
     parser.add_argument('--no_structural_features', action='store_true', default=False, help='ablate the common-neighbor readout in MYMODEL')
+    parser.add_argument('--no_inner_product', action='store_true', default=False, help='ablate the inner product term in MYMODEL, together with the two flags above this makes MYMODEL identical to CRAFT')
     try:
         args = parser.parse_args()
         args.device = f'cuda:{args.gpu}' if torch.cuda.is_available() and args.gpu >= 0 else 'cpu'
@@ -302,10 +303,15 @@ def load_link_prediction_best_configs(args: argparse.Namespace):
                 args.num_layers, args.batch_size, args.embedding_size = mymodel_configs[args.dataset_name]
         args.sample_neighbor_strategy = 'recent'
         args.loss = 'BPR'
-        # the backbone is configured exactly as CRAFT is: the repeat-count block is the difference
-        # between CRAFT-R (seen-dominant datasets) and CRAFT (unseen-dominant datasets)
+        # the rest of the recipe follows the CRAFT paper, so that the only difference between a CRAFT run
+        # and a MYMODEL run is the model: --shuffle --num_output_layer 2 --use_pos
+        # --output_cat_time_intervals. Validation selects the model by average precision, as in the paper;
+        # MRR is a test-time metric only, so use_mrr_val is deliberately left off.
         args.use_pos = True
         args.output_cat_time_intervals = True
+        args.num_output_layer = 2
+        args.shuffle = True
+        # the repeat-count block is what separates CRAFT-R (seen-dominant) from CRAFT (unseen-dominant)
         args.output_cat_repeat_times = args.dataset_name in ['wikipedia', 'reddit', 'mooc', 'lastfm', 'uci',
                                                              'Flights', 'tgbl-coin', 'tgbl-flight']
     else:

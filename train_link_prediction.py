@@ -378,7 +378,8 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
             num_dst_neighbors=args.num_dst_neighbors,
             num_decay_kernels=args.num_decay_kernels,
             use_structural_bias=not args.no_structural_bias,
-            use_structural_features=not args.no_structural_features
+            use_structural_features=not args.no_structural_features,
+            use_inner_product=not args.no_inner_product
         )
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")
