@@ -22,7 +22,7 @@ from models.CRAFTV5 import CRAFTV5
 from models.MYMODEL import MYMODEL
 from models.modules import MergeLayer, MulMergeLayer, BPRLoss
 from utils.utils import set_random_seed, convert_to_gpu, get_parameter_sizes, create_optimizer
-from utils.utils import get_neighbor_sampler, get_dst_neighbors, NegativeEdgeSampler
+from utils.utils import get_neighbor_sampler, get_dst_neighbors, get_edge_directions, NegativeEdgeSampler
 from evaluate_models_utils import evaluate_model_link_prediction
 from evaluate_models_utils import evaluate_model_link_prediction_multi_negs
 from utils.metrics import get_link_prediction_metrics
@@ -123,7 +123,7 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                 batch_neg_dst_node_embeddings = dst_node_embeddings[len(pos_item):]
                 batch_neg_src_node_embeddings = batch_src_node_embeddings
             elif args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel']:
-                src_neighb_seq, _, src_neighb_interact_times = train_neighbor_sampler.get_historical_neighbors_left(node_ids=batch_src_node_ids, node_interact_times=batch_node_interact_times, num_neighbors=args.num_neighbors)
+                src_neighb_seq, src_neighb_edge_ids, src_neighb_interact_times = train_neighbor_sampler.get_historical_neighbors_left(node_ids=batch_src_node_ids, node_interact_times=batch_node_interact_times, num_neighbors=args.num_neighbors)
                 neighbor_num=(src_neighb_seq!=0).sum(axis=1)
                 if neighbor_num.sum() == 0:
                     continue
@@ -140,7 +140,11 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                 if is_craftv5:
                     craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids), dst_neighb_seq=torch.from_numpy(dst_neighb_seq), dst_neighb_interact_times=torch.from_numpy(dst_neighb_interact_times))
                 elif is_mymodel:
-                    craftv5_inputs = dict(dst_neighb_seq=torch.from_numpy(dst_neighb_seq))
+                    # the direction of each history entry, recovered from the edge ids the sampler returns
+                    src_is_sender = get_edge_directions(full_data=full_data, node_ids=batch_src_node_ids, edge_ids=src_neighb_edge_ids)
+                    craftv5_inputs = dict(dst_neighb_seq=torch.from_numpy(dst_neighb_seq),
+                                          src_is_sender=torch.from_numpy(src_is_sender),
+                                          src_node_ids=torch.from_numpy(batch_src_node_ids))
                 else:
                     craftv5_inputs = {}
                 loss, predicts, labels = model.calculate_loss(src_neighb_seq=torch.from_numpy(src_neighb_seq),
@@ -377,9 +381,14 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
             skip_connection=args.skip_connection,
             num_dst_neighbors=args.num_dst_neighbors,
             num_decay_kernels=args.num_decay_kernels,
+            use_direction=not args.no_direction,
+            use_reciprocity=not args.no_reciprocity,
             use_structural_bias=not args.no_structural_bias,
             use_structural_features=not args.no_structural_features,
-            use_inner_product=not args.no_inner_product
+            use_reverse_view=args.use_reverse_view,
+            use_inner_product=not args.no_inner_product,
+            # sources and destinations share one id space on the non-bipartite datasets
+            shares_node_space=(args.src_min_idx == 1 and args.dst_min_idx == 1)
         )
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")

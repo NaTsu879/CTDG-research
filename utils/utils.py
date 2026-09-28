@@ -539,6 +539,20 @@ def get_neighbor_sampler(data: Data, sample_neighbor_strategy: str = 'uniform', 
 
     return NeighborSamplerOrigin(adj_list=adj_list, sample_neighbor_strategy=sample_neighbor_strategy, time_scaling_factor=time_scaling_factor, seed=seed)
 
+def get_edge_directions(full_data: Data, node_ids: np.ndarray, edge_ids: np.ndarray):
+    """
+    recover, for each sampled history entry, whether the node itself initiated that interaction. The neighbor
+    samplers symmetrize the graph and only return which nodes interacted, but the edge ids they return identify
+    the interactions, and the data stores the sender of every edge.
+    :param full_data: Data, the whole dataset, whose edge_ids are 1-based and consecutive
+    :param node_ids: ndarray, shape (batch_size, ), the nodes whose histories were sampled
+    :param edge_ids: ndarray, shape (batch_size, num_neighbors), edge ids of the sampled history entries, 0 is padding
+    :return: ndarray of bool, shape (batch_size, num_neighbors), True where node_ids[i] is the sender of that edge
+    """
+    edge_senders = full_data.src_node_ids[np.clip(edge_ids - 1, 0, len(full_data.src_node_ids) - 1)]
+    return np.logical_and(edge_ids > 0, edge_senders == node_ids[:, np.newaxis])
+
+
 def get_dst_neighbors(neighbor_sampler: NeighborSampler, test_dst: torch.Tensor, batch_node_interact_times: np.ndarray, num_neighbors: int = 1):
     """
     get the historical neighbors of each candidate destination node before the current prediction time

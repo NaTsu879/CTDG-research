@@ -93,9 +93,12 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--fusion_mode', type=str, default='projected', choices=['projected', 'simple'], help='fusion mode for CRAFTV4 (projected or simple)')
     parser.add_argument('--num_dst_neighbors', type=int, default=20, help='number of recent neighbors of each candidate used for co-occurrence in MYMODEL')
     parser.add_argument('--num_decay_kernels', type=int, default=4, help='number of exponential kernels of the recency-weighted overlap in MYMODEL')
+    parser.add_argument('--no_direction', action='store_true', default=False, help='ablate the direction encoding of the history entries in MYMODEL')
+    parser.add_argument('--no_reciprocity', action='store_true', default=False, help='ablate the per-direction elapsed times and counts in MYMODEL')
+    parser.add_argument('--use_reverse_view', action='store_true', default=False, help='let the source also attend over each candidate history in MYMODEL, non-bipartite datasets only')
     parser.add_argument('--no_structural_bias', action='store_true', default=False, help='ablate the co-occurrence bias on the attention logits in MYMODEL')
     parser.add_argument('--no_structural_features', action='store_true', default=False, help='ablate the common-neighbor readout in MYMODEL')
-    parser.add_argument('--no_inner_product', action='store_true', default=False, help='ablate the inner product term in MYMODEL, together with the two flags above this makes MYMODEL identical to CRAFT')
+    parser.add_argument('--no_inner_product', action='store_true', default=False, help='ablate the inner product term in MYMODEL, together with the other ablation flags this makes MYMODEL identical to CRAFT')
     try:
         args = parser.parse_args()
         args.device = f'cuda:{args.gpu}' if torch.cuda.is_available() and args.gpu >= 0 else 'cpu'
