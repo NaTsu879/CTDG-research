@@ -1,167 +1,170 @@
 import math
 import torch
-import torch.nn.functional as F
 from torch import nn
+from models.modules import CrossAttention
 from models.modules import BPRLoss, MLP
 
 
 class MYMODEL(torch.nn.Module):
     """
-    MYMODEL: ranking candidate destinations by a delay-resolved excitation field.
+    MYMODEL: structure-aware candidate ranking. CRAFT's candidate-conditioned cross-attention, made
+    aware of the candidate's own neighborhood through vectorized co-occurrence, at CRAFT's cost.
 
-    Motivation
-    ----------
-    Every model in this repository turns the source's history into one pooled vector and then
-    compares it with the candidate: TGAT/TCL/DyGFormer pool with self-attention, GraphMixer with an
-    MLP, SGNN-HN with a session graph, CRAFT pools with cross-attention in which the candidate is
-    the query. Time enters those models as a feature that is encoded and then mixed into the pooling
-    (a time encoding on the keys, or, in CRAFT, two scalars - the elapsed time of the candidate's
-    last event and a repeat count - concatenated to the pooled vector just before the output MLP).
-    Identity and time therefore interact only through a final MLP, which means such a model can
-    learn "this candidate matches the context" and "recent things matter", but it cannot represent
-    *at which delay* one interaction makes another one likely.
-
-    That delay structure is the dominant signal in this task. A user re-listens to an artist within
-    minutes but re-watches a lecture after a day; a Wikipedia editor rarely edits the same page twice
-    in a row (inhibition), while a subreddit visit repeats in bursts; an item that was consumed
-    milliseconds ago is often *less* likely than one consumed an hour ago. Exponential-decay memory
-    (JODIE/DyRep/TGN), time-interval sampling (CAWN), and a plain repeat count (EdgeBank, CRAFT-R)
-    can only express monotone decay or delay-blind counting.
-
-    The operator
-    ------------
-    MYMODEL replaces candidate-conditioned attention with an explicit excitation field. The score of
-    candidate d for source s at time t is the log-intensity of a marked point process,
-
-        log lambda(d | s, t) = base_d + f( E(d) , S(d) , I(d) )
-
-    whose terms come from one shared construction: a learned basis over *delays*, and a factorized
-    tensor that says how strongly a past interaction with item a excites item d at each delay.
-
-    1. Delay basis. Elapsed times are normalized by a running median (a buffer updated during
-       training only, so the model is independent of the time unit of the dataset) and mapped to
-       z = log1p(dt). The basis is one constant function plus M-1 Gaussian bumps in z with learned
-       centers mu_m and widths sigma_m, i.e. phi_m(dt) picks out "about this long ago". Bumps, unlike
-       exponentials, are non-monotone, so a characteristic delay or a refractory period is
-       representable; the constant basis recovers delay-blind counting.
-
-    2. Event excitation E(d), a CP-factorized (trigger item x response item x delay) tensor.
-       With trigger vectors g_a = W_g e_a and response vectors r_d = W_r e_d, the excitation of the
-       pair (a -> d) at delay dt is sum_m phi_m(dt) * <g_a * D_m, r_d>, where D_m are R diagonal
-       metrics per basis. The pairwise, delay-resolved tensor T[a, d, m] is thus factorized as
-       sum_h g_a[h] D_m[h] r_d[h], which is what keeps it affordable: because the sum over history
-       entries j moves inside, the whole field collapses to M*R delay summaries of the source,
-           G_m = sum_j phi_m(dt_j) g_{h_j},   E(d)_{m,r} = <G_m * D_{m,r}, r_d> / sqrt(H),
-       so no batch x candidate x history tensor is ever formed. Cost is O(L*M*H + C*M*R*H) against
-       CRAFT's O(C*L*H) attention, which matters at evaluation time with 100 negatives per positive.
-       E(d) is the candidate's excitation profile across delays; the readout f is a small network on
-       that profile, so the effect of the profile can saturate, be non-monotone, or be negative
-       (inhibition), none of which decay-based or count-based models can express.
-
-    3. Self-dynamics S(d). The candidate's own last interaction with anybody (the one extra input
-       CRAFT also receives) enters through the same basis: S(d)_m = phi_m(dt_d) * <P_m, r_d>, an
-       item-specific recurrence profile - how long after its own last event an item tends to recur.
-
-    4. Novelty channel I(d). For candidates that never appear in the source's history the excitation
-       field is empty, so the field is complemented by P interest prototypes that pool the history
-       with delay-aware attention weights (the delay basis also enters the pooling logits), giving
-       I(d)_p = <q_p(s), r_d>. Multiple prototypes keep multi-modal tastes separable instead of
-       averaging them into one vector. This is additive with the excitation, as intensities are in a
-       point process - there is no gating heuristic.
-
-    What it subsumes (useful as an ablation table)
-    ---------------------------------------------
-      * EdgeBank / CRAFT's repeat count: constant basis only (M = 1), identity metric, linear readout.
-      * TGN / JODIE style exponential decay: one monotone basis, linear readout.
-      * SLRC-style Hawkes recommendation: self-dynamics term alone.
-      * A pure factorization model (SASRec/SGNN-HN-like scoring): novelty channel alone.
-    Each is reachable with a flag, so the contribution of the delay-resolved pairwise tensor is
-    measurable rather than asserted.
-
-    Fairness and budget
+    The gap this closes
     -------------------
-    The model consumes exactly the inputs CRAFT consumes (the source's recent history with its
-    timestamps, the candidate ids, and each candidate's last-update time), is trained with the same
-    single negative per positive and the same BPR/BCE loss, and is evaluated by the same protocol.
-    It has no attention over candidates and no transformer block, so at equal hidden size it is
-    *smaller* than CRAFT; raise --embedding_size, --num_delay_bases or --num_response_channels to
-    spend the remaining budget if strict parameter parity is wanted.
+    CRAFT scores a candidate d for a source s by letting d query s's recent history. It is
+    candidate-centric but *structure-blind*: apart from one scalar (d's last-update time), it never
+    looks at d's own neighborhood, so it cannot use triadic closure - "s and d share partners,
+    therefore s will contact d" - which is the dominant link-formation mechanism in social and
+    communication graphs. On uci, the dataset where that mechanism is strongest, DyGFormer (76.61)
+    beats CRAFT-R (75.11), and DyGFormer's own ablations credit its neighbor co-occurrence encoding.
+    But DyGFormer pays for it with a transformer over both sequences plus patching, and its
+    co-occurrence counting is a Python loop with np.unique per row - which is why it is missing from
+    several columns of the benchmark tables entirely.
+
+    This model takes that one signal and injects it where it is cheapest and most useful: as a bias
+    on the candidate-conditioned attention, plus a recency-weighted readout.
+
+    1. Vectorized co-occurrence. With the source's history S (L entries) and each candidate's own
+       history D_c (Ld entries, from the same sampler the rest of the pipeline uses), one broadcast
+       comparison gives
+         shared[b, c, l]  = how many times S[l] appears in the candidate's history,
+         own[b, l]        = how many times S[l] appears in the source's own history,
+       in O(L * Ld) per pair with no Python loop, no extra embedding table and no extra tokens.
+       Both quantities are *identity-free*: they describe structure, not who the nodes are, so they
+       transfer to nodes never seen in training.
+
+    2. Structural attention bias (the main mechanism). Those two counts are mapped by a linear layer
+       to one bias per attention head and added to the cross-attention logits over history positions.
+       The candidate can therefore say "attend to the partners I also interact with" instead of only
+       "attend to the partners that look like me in embedding space". This is the part CRAFT cannot
+       express at any width: its attention logits depend on the candidate only through its embedding,
+       so a candidate that shares three partners with the source and one that shares none are
+       indistinguishable when their embeddings are similar.
+
+    3. Recency-weighted common-neighbor readout. Shared partners matter more when the interaction was
+       recent, so the overlap is also aggregated with K learned exponential kernels over normalized
+       elapsed time, together with the overlap count, the Jaccard-style normalized overlap and the
+       candidate's history length. This block is projected and concatenated next to CRAFT's elapsed
+       time and repeat-count blocks before the output layer.
+
+    4. Inner-product scoring term. Following SASRec and SGNN-HN, which score by a scaled inner
+       product between the sequence representation and the item embedding, a term
+       w * <e_d, context(d)> / sqrt(H) is added to the logit; w is learned and starts at zero.
+
+    Why this cannot regress by construction
+    ---------------------------------------
+    The backbone, its flags (use_pos, output_cat_time_intervals, output_cat_repeat_times) and the
+    initialization are CRAFT's. The three additions are zero-initialized: the structural bias layer
+    is zero, the output layer's columns that read the structural block are zero, and the
+    inner-product weight is zero. At initialization MYMODEL therefore computes exactly CRAFT-R, and
+    CRAFT-R stays inside its function class - set those terms to zero and you get CRAFT back, which
+    is also how the ablations are run (--no_structural_bias, --no_structural_features). The extra
+    parameters are one Linear(2, num_heads), K kernel timescales and a small feature MLP, so the
+    count stays within a couple of percent of CRAFT's.
+
+    Inputs are the source history with timestamps, the candidates, their last-update times and their
+    own recent histories. Training is untouched: one negative per positive from the same
+    collision-checked sampler, the same BPR/BCE loss, the same evaluation protocol. The candidate's
+    history is the same information DyGFormer, TGN, CAWN and CRAFTV5 in this repository already
+    consume; nothing about the protocol differs from a CRAFT run.
     """
 
-    def __init__(self, hidden_size, n_nodes, max_seq_length, device, loss_type, num_delay_bases=8,
-                 num_response_channels=4, num_interests=4, num_layers=1, hidden_dropout_prob=0.1,
-                 emb_dropout_prob=0.1, layer_norm_eps=1e-12, initializer_range=0.02, readout='mlp',
-                 use_self_dynamics=True, use_novelty=True, delay_basis='gaussian',
+    def __init__(self, n_layers, n_heads, hidden_size, hidden_dropout_prob, attn_dropout_prob, hidden_act,
+                 layer_norm_eps, initializer_range, n_nodes, max_seq_length, device, loss_type, use_pos=True,
+                 input_cat_time_intervals=False, output_cat_time_intervals=True, output_cat_repeat_times=True,
+                 num_output_layer=1, emb_dropout_prob=0.1, skip_connection=False, num_dst_neighbors=20,
+                 num_decay_kernels=4, use_structural_bias=True, use_structural_features=True,
                  time_scale_momentum=0.99):
         """
-        :param hidden_size: int, dimension of the item embeddings and of the trigger/response spaces
-        :param n_nodes: int, number of candidate (destination role) nodes
-        :param max_seq_length: int, number of history entries per source
-        :param num_delay_bases: int, number of delay basis functions, the first one is the constant
-        :param num_response_channels: int, number of diagonal metrics per delay basis
-        :param num_interests: int, number of interest prototypes of the novelty channel
-        :param num_layers: int, depth of the trigger and response projections (1 is linear)
-        :param readout: str, 'mlp' or 'linear', the readout on the excitation profile
-        :param use_self_dynamics: bool, whether to use the candidate's own recurrence profile
-        :param use_novelty: bool, whether to use the interest prototypes
-        :param delay_basis: str, 'gaussian' (non-monotone bumps) or 'exponential' (monotone decay,
-        for the ablation that reduces the field to decaying memory)
+        the arguments up to skip_connection are CRAFT's, with the same meaning
+        :param num_dst_neighbors: int, number of recent neighbors of each candidate used for co-occurrence
+        :param num_decay_kernels: int, number of exponential kernels of the recency-weighted overlap
+        :param use_structural_bias: bool, whether the co-occurrence counts bias the attention logits
+        :param use_structural_features: bool, whether the overlap readout is concatenated at the output
         """
         super(MYMODEL, self).__init__()
+        self.n_layers = n_layers
+        self.n_heads = n_heads
         self.hidden_size = hidden_size
+        self.hidden_dropout_prob = hidden_dropout_prob
+        self.attn_dropout_prob = attn_dropout_prob
+        self.hidden_act = hidden_act
+        self.layer_norm_eps = layer_norm_eps
+        self.initializer_range = initializer_range
         self.n_nodes = n_nodes
         self.max_seq_length = max_seq_length
-        self.device = device
-        self.num_delay_bases = num_delay_bases
-        self.num_response_channels = num_response_channels
-        self.num_interests = num_interests if use_novelty else 0
-        self.readout_type = readout
-        self.use_self_dynamics = use_self_dynamics
-        self.use_novelty = use_novelty
-        self.delay_basis = delay_basis
-        self.initializer_range = initializer_range
+        self.use_pos = use_pos
+        self.input_cat_time_intervals = input_cat_time_intervals
+        self.output_cat_time_intervals = output_cat_time_intervals
+        self.output_cat_repeat_times = output_cat_repeat_times
+        self.emb_dropout_prob = emb_dropout_prob
+        self.num_dst_neighbors = num_dst_neighbors
+        self.num_decay_kernels = num_decay_kernels
+        self.use_structural_bias = use_structural_bias
+        self.use_structural_features = use_structural_features
         self.time_scale_momentum = time_scale_momentum
         self.eps = 1e-6
+        self.device = device
 
-        # items live in one embedding table, as in CRAFT, plus a scalar base intensity per item
+        # ---- CRAFT backbone ----
         self.node_embedding = nn.Embedding(self.n_nodes + 1, self.hidden_size, padding_idx=0)
-        self.base_rate = nn.Embedding(self.n_nodes + 1, 1, padding_idx=0)
-        # an item plays two different roles: it triggers later interactions, and it responds to earlier ones
-        self.trigger_projection = MLP(num_layers=num_layers, input_dim=self.hidden_size, hidden_dim=self.hidden_size,
-                                      output_dim=self.hidden_size, dropout=hidden_dropout_prob, use_act=True,
-                                      skip_connection=False)
-        self.response_projection = MLP(num_layers=num_layers, input_dim=self.hidden_size, hidden_dim=self.hidden_size,
-                                       output_dim=self.hidden_size, dropout=hidden_dropout_prob, use_act=True,
-                                       skip_connection=False)
+        if self.use_pos:
+            self.position_embedding = nn.Embedding(self.max_seq_length, self.hidden_size)
+        trm_input_dim = self.hidden_size * 2 if self.input_cat_time_intervals else self.hidden_size
+        self.cross_attention = CrossAttention(
+            n_layers=self.n_layers,
+            n_heads=self.n_heads,
+            hidden_size=trm_input_dim,
+            inner_size=trm_input_dim * 4,
+            hidden_dropout_prob=self.hidden_dropout_prob,
+            attn_dropout_prob=self.attn_dropout_prob,
+            hidden_act=self.hidden_act,
+            layer_norm_eps=self.layer_norm_eps,
+        )
+        output_dim = trm_input_dim
+        if self.output_cat_time_intervals or self.input_cat_time_intervals:
+            self.time_projection = MLP(num_layers=1, input_dim=1, hidden_dim=self.hidden_size,
+                                       output_dim=self.hidden_size, dropout=self.hidden_dropout_prob,
+                                       use_act=True, skip_connection=skip_connection)
+        if self.output_cat_time_intervals:
+            output_dim += self.hidden_size
+        if self.output_cat_repeat_times:
+            self.repeat_times_projection = MLP(num_layers=1, input_dim=1, hidden_dim=self.hidden_size,
+                                               output_dim=self.hidden_size, dropout=self.hidden_dropout_prob,
+                                               use_act=True, skip_connection=skip_connection)
+            output_dim += self.hidden_size
 
-        # delay basis: basis 0 is the constant, the remaining ones are bumps (or decays) in log-delay space
-        num_shaped_bases = max(self.num_delay_bases - 1, 0)
-        if num_shaped_bases > 0:
-            self.delay_centers = nn.Parameter(torch.linspace(0.0, 4.0, num_shaped_bases))
-            self.delay_widths = nn.Parameter(torch.full((num_shaped_bases,), 0.8))
-        # diagonal metrics of the factorized (trigger, response, delay) excitation tensor
-        self.response_metrics = nn.Parameter(torch.empty(self.num_delay_bases, self.num_response_channels,
-                                                         self.hidden_size))
-        if self.use_self_dynamics:
-            # per-delay direction of the candidate's own recurrence profile
-            self.self_dynamics = nn.Parameter(torch.empty(self.num_delay_bases, self.hidden_size))
-        if self.use_novelty:
-            self.interest_queries = nn.Parameter(torch.empty(self.num_interests, self.hidden_size))
-            # the interest pooling is delay-aware: each prototype has a preference over the delay basis
-            self.interest_delay_weights = nn.Parameter(torch.zeros(self.num_interests, self.num_delay_bases))
+        # ---- structural additions ----
+        # per-head attention bias from [count of this history entry in the candidate's history,
+        # count of this history entry in the source's own history]
+        if self.use_structural_bias:
+            self.structural_bias = nn.Linear(2, self.n_heads)
+        if self.use_structural_features:
+            # overlap count, recency-weighted overlap per kernel, normalized overlap, candidate history length,
+            # and whether the candidate has any history
+            self.num_structural_features = self.num_decay_kernels + 4
+            self.log_tau = nn.Parameter(torch.linspace(math.log(0.05), math.log(5.0), self.num_decay_kernels))
+            self.structural_projection = MLP(num_layers=2, input_dim=self.num_structural_features,
+                                             hidden_dim=self.hidden_size, output_dim=self.hidden_size,
+                                             dropout=self.hidden_dropout_prob, use_act=True, skip_connection=False)
+            self.LayerNorm_structural = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
+            # the slice of the concatenated output vector that the structural block occupies
+            self.structural_slice = slice(output_dim, output_dim + self.hidden_size)
+            output_dim += self.hidden_size
+        self.dot_weight = nn.Parameter(torch.zeros(1))
 
-        # the profile of a candidate: excitation (M x R), self-dynamics (M), interests (P), history flag
-        self.profile_dim = self.num_delay_bases * self.num_response_channels + self.num_interests + 1
-        if self.use_self_dynamics:
-            self.profile_dim += self.num_delay_bases
-        self.readout = MLP(num_layers=2 if readout == 'mlp' else 1, input_dim=self.profile_dim,
-                           hidden_dim=self.hidden_size, output_dim=1, dropout=hidden_dropout_prob,
-                           use_act=True, skip_connection=False)
+        self.output_layer = MLP(num_layers=num_output_layer, input_dim=output_dim, hidden_dim=output_dim,
+                                output_dim=1, dropout=self.hidden_dropout_prob, use_act=True,
+                                skip_connection=skip_connection)
+        self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
+        self.LayerNorm_time_intervals = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
+        self.LayerNorm_repeat_times = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
+        self.dropout = nn.Dropout(self.hidden_dropout_prob)
+        self.emb_dropout = nn.Dropout(self.emb_dropout_prob)
 
-        self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=layer_norm_eps)
-        self.emb_dropout = nn.Dropout(emb_dropout_prob)
-
-        # running scale of the elapsed times, so the delay basis is comparable across datasets
+        # running scale of the elapsed times, updated during training only, so the kernels are
+        # comparable across datasets whose timestamps differ by orders of magnitude
         self.register_buffer('time_scale', torch.ones(1))
         self.register_buffer('time_scale_initialized', torch.zeros(1))
 
@@ -173,7 +176,7 @@ class MYMODEL(torch.nn.Module):
         else:
             self.loss_fct = nn.CrossEntropyLoss()
         self.apply(self._init_weights)
-        self._init_field_parameters()
+        self._init_at_craft()
 
     def set_min_idx(self, src_min_idx, dst_min_idx):
         self.src_min_idx = src_min_idx
@@ -188,19 +191,17 @@ class MYMODEL(torch.nn.Module):
         if isinstance(module, nn.Linear) and module.bias is not None:
             module.bias.data.zero_()
 
-    def _init_field_parameters(self):
+    def _init_at_craft(self):
+        """
+        zero every added term, so that the model starts exactly at CRAFT-R
+        """
         with torch.no_grad():
-            # the first response channel starts as the plain inner product, the others as random metrics,
-            # so the channels are not symmetric at initialization
-            self.response_metrics.normal_(mean=0.0, std=1.0 / math.sqrt(self.num_response_channels))
-            self.response_metrics[:, 0, :] = 1.0
-            if self.use_self_dynamics:
-                self.self_dynamics.normal_(mean=0.0, std=self.initializer_range)
-            if self.use_novelty:
-                self.interest_queries.normal_(mean=0.0, std=1.0)
-            # nothing is predicted for the padding item
-            self.node_embedding.weight[0].zero_()
-            self.base_rate.weight[0].zero_()
+            if self.use_structural_bias:
+                self.structural_bias.weight.zero_()
+                self.structural_bias.bias.zero_()
+            if self.use_structural_features:
+                # the output layer ignores the structural block until it learns to use it
+                self.output_layer.lins[0].weight[:, self.structural_slice].zero_()
 
     def _get_time_scale(self, elapsed_times: torch.Tensor, valid_mask: torch.Tensor):
         """
@@ -218,99 +219,161 @@ class MYMODEL(torch.nn.Module):
                     self.time_scale.mul_(self.time_scale_momentum).add_((1.0 - self.time_scale_momentum) * batch_scale)
         return self.time_scale.clamp(min=self.eps)
 
-    def _get_delay_basis(self, elapsed_times: torch.Tensor, valid_mask: torch.Tensor, time_scale: torch.Tensor):
+    def count_co_occurrences(self, src_neighb_seq: torch.Tensor, dst_neighb_seq: torch.Tensor):
         """
-        evaluate the delay basis on elapsed times, the first basis is the constant one
-        :param elapsed_times: Tensor, shape (..., ), raw elapsed times
-        :param valid_mask: Tensor, shape (..., ), whether the event exists
-        :param time_scale: Tensor, shape (1, ), running scale of the elapsed times
-        :return: Tensor, shape (..., num_delay_bases), zero where the event does not exist
+        vectorized neighbor co-occurrence, the counterpart of DyGFormer's per-row np.unique loop
+        :param src_neighb_seq: Tensor, shape (batch_size, max_seq_length), raw ids of the source's history
+        :param dst_neighb_seq: Tensor, shape (batch_size, num_candidates, num_dst_neighbors), raw ids of the
+        candidates' own histories
+        :return: shared_counts (batch_size, num_candidates, max_seq_length), how often each history entry
+        appears in the candidate's history; own_counts (batch_size, max_seq_length), how often each history
+        entry appears in the source's own history; dst_seq_len (batch_size, num_candidates)
         """
-        log_delays = torch.log1p((elapsed_times / time_scale).clamp(min=0.0)).unsqueeze(-1)
-        basis = [torch.ones_like(log_delays)]
-        if self.num_delay_bases > 1:
-            if self.delay_basis == 'exponential':
-                # ablation: monotone decay with learned rates, i.e. classical Hawkes triggering
-                rates = F.softplus(self.delay_widths) + self.eps
-                basis.append(torch.exp(-log_delays / rates.view(1, -1)))
-            else:
-                widths = F.softplus(self.delay_widths) + 1e-2
-                basis.append(torch.exp(-0.5 * ((log_delays - self.delay_centers.view(1, -1)) / widths.view(1, -1)) ** 2))
-        return torch.cat(basis, dim=-1) * valid_mask.unsqueeze(-1).to(log_delays.dtype)
+        batch_size, max_seq_length = src_neighb_seq.shape
+        num_candidates, num_dst_neighbors = dst_neighb_seq.shape[1], dst_neighb_seq.shape[2]
+        src_valid = (src_neighb_seq != 0)
+        dst_valid = (dst_neighb_seq != 0)
+
+        matches = (src_neighb_seq.view(batch_size, 1, max_seq_length, 1) ==
+                   dst_neighb_seq.view(batch_size, num_candidates, 1, num_dst_neighbors))
+        matches = matches & src_valid.view(batch_size, 1, max_seq_length, 1) & \
+            dst_valid.view(batch_size, num_candidates, 1, num_dst_neighbors)
+        shared_counts = matches.sum(dim=-1).float()
+
+        own_matches = (src_neighb_seq.unsqueeze(2) == src_neighb_seq.unsqueeze(1)) & src_valid.unsqueeze(1)
+        own_counts = own_matches.sum(dim=-1).float() * src_valid.float()
+        return shared_counts, own_counts, dst_valid.sum(dim=-1).float()
 
     def forward(self, src_neighb_seq, src_neighb_seq_len, neighbors_interact_times, cur_times, test_dst,
-                dst_last_update_times):
+                dst_last_update_times, dst_neighb_seq):
         """
-        log-intensity of every candidate, all inputs are reindexed into the candidate id space and on self.device
-        :param src_neighb_seq: Tensor, shape (batch_size, max_seq_length), the source's recent history, 0 is padding
-        :param src_neighb_seq_len: Tensor, shape (batch_size, ), number of valid history entries
+        score every candidate, the node ids are raw ids and every tensor is on self.device
+        :param src_neighb_seq: Tensor, shape (batch_size, max_seq_length), the source's recent history
+        :param src_neighb_seq_len: Tensor, shape (batch_size, )
         :param neighbors_interact_times: Tensor, shape (batch_size, max_seq_length)
         :param cur_times: Tensor, shape (batch_size, ), prediction times
-        :param test_dst: Tensor, shape (batch_size, num_candidates), candidates, column 0 is the positive one
-        :param dst_last_update_times: Tensor, shape (batch_size, num_candidates), the candidate's own last
-        interaction time, -100000 when it has none
+        :param test_dst: Tensor, shape (batch_size, num_candidates), column 0 is the positive candidate
+        :param dst_last_update_times: Tensor, shape (batch_size, num_candidates), -100000 when unknown
+        :param dst_neighb_seq: Tensor, shape (batch_size, num_candidates, num_dst_neighbors)
         :return: Tensor, shape (batch_size, num_candidates)
         """
-        batch_size = src_neighb_seq.shape[0]
-        valid_mask = src_neighb_seq != 0
-        has_history = valid_mask.any(dim=1)
+        batch_size, max_seq_length = src_neighb_seq.shape
+        num_candidates = test_dst.shape[1]
 
-        # delays of the history entries and of the candidates' own last events
+        # ---- structure of the pair, computed on the raw ids before they are reindexed ----
+        shared_counts, own_counts, dst_seq_len = self.count_co_occurrences(src_neighb_seq, dst_neighb_seq)
+
+        # ---- reindex into the candidate id space, as CRAFT does ----
+        src_neighb_seq = src_neighb_seq - self.dst_min_idx + 1
+        test_dst = test_dst - self.dst_min_idx + 1
+        src_neighb_seq = src_neighb_seq.masked_fill(src_neighb_seq < 0, 0)
+        valid_mask = src_neighb_seq != 0
+
         src_elapsed = (cur_times.float().view(-1, 1) - neighbors_interact_times.float()).clamp(min=0.0)
         time_scale = self._get_time_scale(src_elapsed, valid_mask)
-        src_basis = self._get_delay_basis(src_elapsed, valid_mask, time_scale)
-        dst_has_history = dst_last_update_times > -1
-        dst_elapsed = (cur_times.float().view(-1, 1) - dst_last_update_times.float()).clamp(min=0.0)
 
-        # the two roles of an item: trigger of later interactions, and response to earlier ones
-        hist_emb = self.emb_dropout(self.LayerNorm(self.node_embedding(src_neighb_seq)))
-        cand_emb = self.emb_dropout(self.LayerNorm(self.node_embedding(test_dst)))
-        triggers = self.trigger_projection(hist_emb)
-        responses = self.response_projection(cand_emb)
+        # ---- CRAFT: elapsed time of the candidate's last interaction ----
+        if self.output_cat_time_intervals:
+            dst_last_update_intervals = cur_times.view(-1, 1) - dst_last_update_times
+            dst_last_update_intervals[dst_last_update_times < -1] = -100000
+            dst_node_time_intervals_feat = self.time_projection(dst_last_update_intervals.float().view(-1, 1)).view(
+                batch_size, num_candidates, -1)
+            dst_node_time_intervals_feat = self.dropout(self.LayerNorm_time_intervals(dst_node_time_intervals_feat))
 
-        # event excitation: delay summaries of the source, read out per candidate through the diagonal metrics
-        delay_summaries = torch.einsum('blm,blh->bmh', src_basis, triggers)
-        metric_summaries = delay_summaries.unsqueeze(2) * self.response_metrics.unsqueeze(0)
-        excitation = torch.einsum('bmrh,bnh->bnmr', metric_summaries, responses) / math.sqrt(self.hidden_size)
-        profile = [excitation.flatten(start_dim=2)]
+        test_dst_emb = self.LayerNorm(self.node_embedding(test_dst).view(batch_size, -1, self.hidden_size))
+        test_dst_emb = self.emb_dropout(test_dst_emb)
 
-        # self-dynamics: the candidate's own recurrence profile over delays
-        if self.use_self_dynamics:
-            dst_basis = self._get_delay_basis(dst_elapsed, dst_has_history, time_scale)
-            self_affinity = torch.einsum('mh,bnh->bnm', self.self_dynamics, responses) / math.sqrt(self.hidden_size)
-            profile.append(dst_basis * self_affinity)
+        # ---- CRAFT: how often the candidate itself appears in the source's history ----
+        if self.output_cat_repeat_times:
+            repeat_times = (test_dst.view(batch_size, num_candidates, 1) ==
+                            src_neighb_seq.view(batch_size, 1, max_seq_length))
+            repeat_times = (repeat_times & valid_mask.view(batch_size, 1, max_seq_length)).sum(dim=-1, keepdim=True).float()
+            repeat_times_feat = self.repeat_times_projection(repeat_times.view(-1, 1)).view(batch_size, num_candidates, -1)
+            repeat_times_feat = self.dropout(self.LayerNorm_repeat_times(repeat_times_feat))
 
-        # novelty channel: delay-aware interest prototypes, for candidates the history says nothing about
-        if self.use_novelty:
-            interest_logits = torch.einsum('ph,blh->bpl', self.interest_queries, triggers) / math.sqrt(self.hidden_size)
-            interest_logits = interest_logits + torch.einsum('pm,blm->bpl', self.interest_delay_weights, src_basis)
-            interest_logits = interest_logits.masked_fill(~valid_mask.unsqueeze(1), -1e10)
-            interests = torch.einsum('bpl,blh->bph', torch.softmax(interest_logits, dim=-1), triggers)
-            interests = interests * has_history.view(-1, 1, 1).to(interests.dtype)
-            profile.append(torch.einsum('bph,bnh->bnp', interests, responses) / math.sqrt(self.hidden_size))
+        # ---- CRAFT: history representation ----
+        neighb_emb = self.node_embedding(src_neighb_seq)
+        if self.use_pos:
+            position_ids = torch.arange(max_seq_length, dtype=torch.long, device=src_neighb_seq.device)
+            position_ids = position_ids.unsqueeze(0).expand_as(src_neighb_seq)
+            input_emb = neighb_emb + self.position_embedding(position_ids)
+        else:
+            input_emb = neighb_emb
+        input_emb = self.emb_dropout(self.LayerNorm(input_emb))
+        if self.input_cat_time_intervals:
+            src_time_intervals = cur_times.view(-1, 1) - neighbors_interact_times
+            src_time_intervals = src_time_intervals.masked_fill(~valid_mask, -100000)
+            src_neighb_time_embedding = self.time_projection(src_time_intervals.float().view(-1, 1)).view(
+                batch_size, max_seq_length, -1)
+            src_neighb_time_embedding = self.dropout(self.LayerNorm_time_intervals(src_neighb_time_embedding))
+            input_emb = torch.cat([input_emb, src_neighb_time_embedding], dim=-1)
 
-        profile.append(dst_has_history.to(excitation.dtype).unsqueeze(-1))
-        profile = torch.cat(profile, dim=-1)
-        return self.readout(profile).squeeze(dim=-1) + self.base_rate(test_dst).squeeze(dim=-1)
+        # ---- structural bias on the attention logits ----
+        attention_mask = self.get_attention_mask(
+            torch.ones(batch_size, num_candidates, device=src_neighb_seq.device), mask_b=valid_mask)
+        if self.use_structural_bias:
+            bias_inputs = torch.stack([
+                torch.log1p(shared_counts),
+                torch.log1p(own_counts).unsqueeze(1).expand(batch_size, num_candidates, max_seq_length),
+            ], dim=-1)
+            attention_mask = attention_mask + self.structural_bias(bias_inputs).permute(0, 3, 1, 2)
+        output = self.cross_attention(test_dst_emb, attention_mask, input_emb, output_all_encoded_layers=False)[-1]
+        context = output
+
+        if self.output_cat_time_intervals:
+            output = torch.cat([output, dst_node_time_intervals_feat], dim=-1).float()
+        if self.output_cat_repeat_times:
+            output = torch.cat([output, repeat_times_feat], dim=-1).float()
+
+        # ---- recency-weighted common-neighbor readout ----
+        if self.use_structural_features:
+            is_shared = (shared_counts > 0).float()
+            tau = self.log_tau.exp().clamp(min=1e-3)
+            decay = torch.exp(-(src_elapsed / time_scale).unsqueeze(-1) / tau.view(1, 1, -1))
+            decay = decay * valid_mask.unsqueeze(-1).float()
+            decayed_overlap = torch.einsum('bcl,blk->bck', is_shared, decay)
+            overlap = is_shared.sum(dim=-1)
+            src_seq_len = valid_mask.sum(dim=1).float().view(-1, 1)
+            structural_features = torch.cat([
+                torch.log1p(overlap).unsqueeze(-1),
+                torch.log1p(decayed_overlap),
+                (overlap / (src_seq_len + dst_seq_len - overlap + self.eps)).unsqueeze(-1),
+                torch.log1p(dst_seq_len).unsqueeze(-1),
+                (dst_seq_len > 0).float().unsqueeze(-1),
+            ], dim=-1)
+            structural_feat = self.dropout(self.LayerNorm_structural(self.structural_projection(structural_features)))
+            output = torch.cat([output, structural_feat], dim=-1).float()
+
+        logits = self.output_layer(output.view(-1, output.shape[-1])).view(batch_size, num_candidates)
+        # SASRec / SGNN-HN style scaled inner product between the candidate and its context
+        logits = logits + self.dot_weight * (test_dst_emb * context[..., :self.hidden_size]).sum(dim=-1) / \
+            math.sqrt(self.hidden_size)
+        return logits
+
+    def get_attention_mask(self, mask_a, mask_b):
+        extended_attention_mask = torch.bmm(mask_a.unsqueeze(1).transpose(1, 2), mask_b.unsqueeze(1).float()).bool().unsqueeze(1)
+        extended_attention_mask = torch.where(extended_attention_mask, 0.0, -10000.0)
+        return extended_attention_mask
 
     def compute_scores(self, src_neighb_seq, src_neighb_seq_len, src_neighb_interact_times, cur_pred_times, test_dst,
-                       dst_last_update_times):
+                       dst_last_update_times, dst_neighb_seq):
         """
-        reindex the raw node ids of a batch into the candidate id space and score the candidates
+        move a batch to the device and score the candidates
+        :param dst_neighb_seq: Tensor, shape (batch_size * num_candidates, num_dst_neighbors), as returned by
+        utils.utils.get_dst_neighbors
         """
-        src_neighb_seq = src_neighb_seq.to(self.device) - self.dst_min_idx + 1
-        test_dst = test_dst.to(self.device) - self.dst_min_idx + 1
-        # padding entries and source-role nodes fall outside the candidate id space
-        src_neighb_seq[src_neighb_seq < 0] = 0
-        return self.forward(src_neighb_seq=src_neighb_seq,
+        test_dst = test_dst.to(self.device)
+        dst_neighb_seq = dst_neighb_seq.to(self.device).view(test_dst.shape[0], test_dst.shape[1], -1)
+        return self.forward(src_neighb_seq=src_neighb_seq.to(self.device),
                             src_neighb_seq_len=src_neighb_seq_len.to(self.device),
                             neighbors_interact_times=src_neighb_interact_times.to(self.device),
                             cur_times=cur_pred_times.to(self.device),
                             test_dst=test_dst,
-                            dst_last_update_times=dst_last_update_times.to(self.device))
+                            dst_last_update_times=dst_last_update_times.to(self.device),
+                            dst_neighb_seq=dst_neighb_seq)
 
     def predict(self, src_neighb_seq, src_neighb_seq_len, src_neighb_interact_times, cur_pred_times, test_dst,
-                dst_last_update_times):
+                dst_last_update_times, dst_neighb_seq):
         """
         [0]src_neighb_seq: [B, L]
         [1]src_neighb_seq_len: [B]
@@ -318,21 +381,22 @@ class MYMODEL(torch.nn.Module):
         [3]cur_pred_times: [B]
         [4]test_dst: [B, 1+num_negs], the positive candidate is at column 0
         [5]dst_last_update_times: [B, 1+num_negs]
+        [6]dst_neighb_seq: [B * (1+num_negs), num_dst_neighbors]
         """
         logits = self.compute_scores(src_neighb_seq, src_neighb_seq_len, src_neighb_interact_times, cur_pred_times,
-                                     test_dst, dst_last_update_times)
+                                     test_dst, dst_last_update_times, dst_neighb_seq)
         if self.loss_type == 'BPR':
             return logits[:, 0].flatten(), logits[:, 1:].flatten()
         return logits[:, 0].sigmoid().flatten(), logits[:, 1:].sigmoid().flatten()
 
     def calculate_loss(self, src_neighb_seq, src_neighb_seq_len, src_neighb_interact_times, cur_pred_times, test_dst,
-                       dst_last_update_times):
+                       dst_last_update_times, dst_neighb_seq):
         """
-        the same objective CRAFT is trained with: one negative per positive, BPR or BCE
+        the objective CRAFT is trained with: one negative per positive, BPR or BCE
         """
         positive_probabilities, negative_probabilities = self.predict(src_neighb_seq, src_neighb_seq_len,
                                                                      src_neighb_interact_times, cur_pred_times,
-                                                                     test_dst, dst_last_update_times)
+                                                                     test_dst, dst_last_update_times, dst_neighb_seq)
         if self.loss_type == 'BPR':
             loss = self.loss_fct(positive_probabilities, negative_probabilities)
         elif self.loss_type == 'BCE':

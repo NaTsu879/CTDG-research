@@ -130,11 +130,19 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                 pos_item = torch.from_numpy(batch_dst_node_ids).unsqueeze(-1)
                 neg_item = torch.from_numpy(batch_neg_dst_node_ids).unsqueeze(-1)
                 test_dst = torch.cat([pos_item, neg_item], dim=-1)
-                # CRAFTV5 additionally attends to the historical neighbors of each candidate destination
+                # CRAFTV5 attends to the historical neighbors of each candidate destination, MYMODEL counts
+                # their co-occurrence with the historical neighbors of the source
                 is_craftv5 = args.model_name in ['CRAFTV5', 'CRAFTv5', 'craftv5']
-                dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=train_neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=args.num_neighbors if is_craftv5 else 1)
+                is_mymodel = args.model_name in ['MYMODEL', 'MyModel', 'mymodel']
+                num_dst_neighbors = args.num_neighbors if is_craftv5 else (model.num_dst_neighbors if is_mymodel else 1)
+                dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=train_neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_dst_neighbors)
                 dst_last_update_time = torch.from_numpy(dst_last_update_time)
-                craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids), dst_neighb_seq=torch.from_numpy(dst_neighb_seq), dst_neighb_interact_times=torch.from_numpy(dst_neighb_interact_times)) if is_craftv5 else {}
+                if is_craftv5:
+                    craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids), dst_neighb_seq=torch.from_numpy(dst_neighb_seq), dst_neighb_interact_times=torch.from_numpy(dst_neighb_interact_times))
+                elif is_mymodel:
+                    craftv5_inputs = dict(dst_neighb_seq=torch.from_numpy(dst_neighb_seq))
+                else:
+                    craftv5_inputs = {}
                 loss, predicts, labels = model.calculate_loss(src_neighb_seq=torch.from_numpy(src_neighb_seq),
                                                                 src_neighb_seq_len=torch.from_numpy(neighbor_num),
                                                                 src_neighb_interact_times=torch.from_numpy(src_neighb_interact_times),
@@ -348,23 +356,29 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
         )
     elif args.model_name in ['MYMODEL', 'MyModel', 'mymodel']:
         dynamic_backbone = MYMODEL(
+            n_layers=args.num_layers,
+            n_heads=args.num_heads,
             hidden_size=args.embedding_size,
+            hidden_dropout_prob=args.hidden_dropout,
+            attn_dropout_prob=args.attn_dropout_prob,
+            hidden_act=args.hidden_act,
+            layer_norm_eps=args.layer_norm_eps,
+            initializer_range=args.initializer_range,
             n_nodes=args.item_size,
             max_seq_length=args.num_neighbors,
             device=args.device,
             loss_type=args.loss,
-            num_delay_bases=args.num_delay_bases,
-            num_response_channels=args.num_response_channels,
-            num_interests=args.num_interests,
-            num_layers=args.num_layers,
-            hidden_dropout_prob=args.hidden_dropout,
+            use_pos=args.use_pos,
+            input_cat_time_intervals=args.input_cat_time_intervals,
+            output_cat_time_intervals=args.output_cat_time_intervals,
+            output_cat_repeat_times=args.output_cat_repeat_times,
+            num_output_layer=args.num_output_layer,
             emb_dropout_prob=args.emb_dropout_prob,
-            layer_norm_eps=args.layer_norm_eps,
-            initializer_range=args.initializer_range,
-            readout=args.delay_readout,
-            use_self_dynamics=not args.no_self_dynamics,
-            use_novelty=not args.no_novelty,
-            delay_basis=args.delay_basis
+            skip_connection=args.skip_connection,
+            num_dst_neighbors=args.num_dst_neighbors,
+            num_decay_kernels=args.num_decay_kernels,
+            use_structural_bias=not args.no_structural_bias,
+            use_structural_features=not args.no_structural_features
         )
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")

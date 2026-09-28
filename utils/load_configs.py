@@ -91,13 +91,10 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--use_mrr_val', action='store_true', default=False, help='whether to use mrr for validation')
     parser.add_argument('--skip_connection', action='store_true', default=False, help='whether to use skip connection in CRAFT')
     parser.add_argument('--fusion_mode', type=str, default='projected', choices=['projected', 'simple'], help='fusion mode for CRAFTV4 (projected or simple)')
-    parser.add_argument('--num_delay_bases', type=int, default=8, help='number of delay basis functions in MYMODEL, the first one is the constant basis')
-    parser.add_argument('--num_response_channels', type=int, default=4, help='number of diagonal metrics per delay basis in MYMODEL')
-    parser.add_argument('--num_interests', type=int, default=4, help='number of interest prototypes of the novelty channel in MYMODEL')
-    parser.add_argument('--delay_readout', type=str, default='mlp', choices=['mlp', 'linear'], help='readout on the excitation profile in MYMODEL')
-    parser.add_argument('--delay_basis', type=str, default='gaussian', choices=['gaussian', 'exponential'], help='shape of the delay basis in MYMODEL, exponential reduces the field to decaying memory')
-    parser.add_argument('--no_self_dynamics', action='store_true', default=False, help='ablate the recurrence profile of the candidate in MYMODEL')
-    parser.add_argument('--no_novelty', action='store_true', default=False, help='ablate the interest prototypes in MYMODEL')
+    parser.add_argument('--num_dst_neighbors', type=int, default=20, help='number of recent neighbors of each candidate used for co-occurrence in MYMODEL')
+    parser.add_argument('--num_decay_kernels', type=int, default=4, help='number of exponential kernels of the recency-weighted overlap in MYMODEL')
+    parser.add_argument('--no_structural_bias', action='store_true', default=False, help='ablate the co-occurrence bias on the attention logits in MYMODEL')
+    parser.add_argument('--no_structural_features', action='store_true', default=False, help='ablate the common-neighbor readout in MYMODEL')
     try:
         args = parser.parse_args()
         args.device = f'cuda:{args.gpu}' if torch.cuda.is_available() and args.gpu >= 0 else 'cpu'
@@ -305,6 +302,12 @@ def load_link_prediction_best_configs(args: argparse.Namespace):
                 args.num_layers, args.batch_size, args.embedding_size = mymodel_configs[args.dataset_name]
         args.sample_neighbor_strategy = 'recent'
         args.loss = 'BPR'
+        # the backbone is configured exactly as CRAFT is: the repeat-count block is the difference
+        # between CRAFT-R (seen-dominant datasets) and CRAFT (unseen-dominant datasets)
+        args.use_pos = True
+        args.output_cat_time_intervals = True
+        args.output_cat_repeat_times = args.dataset_name in ['wikipedia', 'reddit', 'mooc', 'lastfm', 'uci',
+                                                             'Flights', 'tgbl-coin', 'tgbl-flight']
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")
 

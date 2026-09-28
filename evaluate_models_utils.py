@@ -162,11 +162,19 @@ def evaluate_model_link_prediction_multi_negs(model_name: str, model: nn.Module,
                 pos_item = torch.from_numpy(batch_dst_node_ids)
                 neg_item = torch.from_numpy(batch_neg_dst_node_ids)
                 test_dst = torch.cat([pos_item.unsqueeze(1), neg_item], dim=1)
-                # CRAFTV5 additionally attends to the historical neighbors of each candidate destination
+                # CRAFTV5 attends to the historical neighbors of each candidate destination, MYMODEL counts
+                # their co-occurrence with the historical neighbors of the source
                 is_craftv5 = model_name in ['CRAFTV5', 'CRAFTv5', 'craftv5']
-                dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_neighbors if is_craftv5 else 1)
+                is_mymodel = model_name in ['MYMODEL', 'MyModel', 'mymodel']
+                num_dst_neighbors = num_neighbors if is_craftv5 else (model.num_dst_neighbors if is_mymodel else 1)
+                dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_dst_neighbors)
                 dst_last_update_time = torch.from_numpy(dst_last_update_time)
-                craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids), dst_neighb_seq=torch.from_numpy(dst_neighb_seq), dst_neighb_interact_times=torch.from_numpy(dst_neighb_interact_times)) if is_craftv5 else {}
+                if is_craftv5:
+                    craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids), dst_neighb_seq=torch.from_numpy(dst_neighb_seq), dst_neighb_interact_times=torch.from_numpy(dst_neighb_interact_times))
+                elif is_mymodel:
+                    craftv5_inputs = dict(dst_neighb_seq=torch.from_numpy(dst_neighb_seq))
+                else:
+                    craftv5_inputs = {}
                 positive_probabilities, negative_probabilities = model.predict(src_neighb_seq=torch.from_numpy(src_neighb_seq),
                                                                 src_neighb_seq_len=torch.from_numpy(neighbor_num),
                                                                 src_neighb_interact_times=torch.from_numpy(src_neighb_interact_times),
@@ -326,11 +334,19 @@ def evaluate_model_link_prediction(model_name: str, model: nn.Module, neighbor_s
                 pos_item = torch.from_numpy(batch_dst_node_ids)
                 neg_item = torch.from_numpy(batch_neg_dst_node_ids)
                 test_dst = torch.cat([pos_item.unsqueeze(1), neg_item.unsqueeze(1)], dim=1)
-                # CRAFTV5 additionally attends to the historical neighbors of each candidate destination
+                # CRAFTV5 attends to the historical neighbors of each candidate destination, MYMODEL counts
+                # their co-occurrence with the historical neighbors of the source
                 is_craftv5 = model_name in ['CRAFTV5', 'CRAFTv5', 'craftv5']
-                dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_neighbors if is_craftv5 else 1)
+                is_mymodel = model_name in ['MYMODEL', 'MyModel', 'mymodel']
+                num_dst_neighbors = num_neighbors if is_craftv5 else (model.num_dst_neighbors if is_mymodel else 1)
+                dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_dst_neighbors)
                 dst_last_update_time = torch.from_numpy(dst_last_update_time)
-                craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids), dst_neighb_seq=torch.from_numpy(dst_neighb_seq), dst_neighb_interact_times=torch.from_numpy(dst_neighb_interact_times)) if is_craftv5 else {}
+                if is_craftv5:
+                    craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids), dst_neighb_seq=torch.from_numpy(dst_neighb_seq), dst_neighb_interact_times=torch.from_numpy(dst_neighb_interact_times))
+                elif is_mymodel:
+                    craftv5_inputs = dict(dst_neighb_seq=torch.from_numpy(dst_neighb_seq))
+                else:
+                    craftv5_inputs = {}
                 positive_probabilities, negative_probabilities = model.predict(
                                         src_neighb_seq=torch.from_numpy(src_neighb_seq),
                                         src_neighb_seq_len=torch.from_numpy(neighbor_num),
