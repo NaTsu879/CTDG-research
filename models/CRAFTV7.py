@@ -4,47 +4,40 @@ from models.modules import CrossAttention
 from models.modules import BPRLoss, MLP
 
 
-class MYMODEL(torch.nn.Module):
+class CRAFTV7(torch.nn.Module):
     """
-    MYMODEL: CRAFT with a reciprocity readout.
+    CRAFTV7: CRAFT with CRAFTV4's behavioral-intent gated fusion and MYMODEL's reciprocity readout.
 
-    The gap this closes
-    -------------------
-    Every neighbor sampler in this repository symmetrizes the temporal graph: for a node s it returns
-    the set of nodes s interacted with, with no record of who initiated each interaction (see
-    get_neighbor_sampler in utils/utils.py, which appends each edge to the adjacency list of both
-    endpoints). CRAFT therefore consumes an undirected history, although the task is directed - rank
-    the destinations that the source will interact with next. On a communication or follow network the
-    direction of a past interaction carries much of the signal: "d messaged me and I have not replied
-    yet" predicts s -> d far better than "d and I interacted".
+    1. CRAFT cross-attention: each candidate destination attends over the source's recent history,
+       giving a candidate-specific context c_d.
+    2. Behavioral intent (from CRAFTV4): a source state z_t is pooled from the history by self-attentive
+       pooling, independent of the candidate. A candidate-specific gate decides how much of it to mix in:
+       g_d = sigma(W_g [c_d ; z_t]),  h_d = c_d + g_d * z_t
+       ('projected' fusion first projects c_d and z_t, as in CRAFTV4).
+    3. CRAFT head: h_d is concatenated with the candidate's elapsed-time feature (and the repeat-count
+       feature on seen-dominant datasets) and scored by an MLP.
+    4. Reciprocity (from MYMODEL): the source's past interactions with each candidate are split by
+       direction (source sent / source received), and each direction gives the log elapsed time of the
+       most recent one, whether any exists, and the log count. The six features go through a small MLP
+       whose output is added to the logit behind a gate that starts at zero.
 
-    Nothing extra has to be sampled to recover this. The neighbor sampler already returns the edge id
-    of every history entry, and the sender of that edge is in the data, so a single boolean per history
-    entry says whether the source was the sender or the receiver (see get_edge_directions).
-
-    The reciprocity readout
-    -----------------------
-    For each candidate, the history entries that are interactions with that candidate are split by
-    direction, and each direction gives three features: the log elapsed time since the most recent
-    one, whether any exists, and the log count. The six features go through a small MLP whose output
-    is added to CRAFT's logit behind a gate that starts at zero, so the model starts exactly at CRAFT.
-    With --no_reciprocity the model is CRAFT, which is how the control run is done.
-
-    Training is untouched: one negative per positive from the same collision-checked sampler, the
-    same BPR/BCE loss, validation on average precision and MRR at test only, as in the CRAFT paper.
+    With --no_reciprocity the model is CRAFTV4, with --no_behavior_gate it is MYMODEL, and with both it is
+    CRAFT, which is how the ablation is done. Training follows the CRAFT recipe unchanged.
     """
 
     def __init__(self, n_layers, n_heads, hidden_size, hidden_dropout_prob, attn_dropout_prob, hidden_act,
                  layer_norm_eps, initializer_range, n_nodes, max_seq_length, device, loss_type, use_pos=True,
                  input_cat_time_intervals=False, output_cat_time_intervals=True, output_cat_repeat_times=True,
-                 num_output_layer=1, emb_dropout_prob=0.1, skip_connection=False, use_reciprocity=True,
-                 time_scale_momentum=0.99):
+                 num_output_layer=1, emb_dropout_prob=0.1, skip_connection=False, fusion_mode='projected',
+                 use_behavior_gate=True, use_reciprocity=True, time_scale_momentum=0.99):
         """
         the arguments up to skip_connection are CRAFT's, with the same meaning
+        :param fusion_mode: str, 'projected' or 'simple', the gated fusion of CRAFTV4
+        :param use_behavior_gate: bool, whether the behavioral state is fused into the candidate context
         :param use_reciprocity: bool, whether the reciprocity readout is added to the logit
         :param time_scale_momentum: float, momentum of the running scale of the elapsed times
         """
-        super(MYMODEL, self).__init__()
+        super(CRAFTV7, self).__init__()
         self.n_layers = n_layers
         self.n_heads = n_heads
         self.hidden_size = hidden_size
@@ -60,6 +53,8 @@ class MYMODEL(torch.nn.Module):
         self.output_cat_time_intervals = output_cat_time_intervals
         self.output_cat_repeat_times = output_cat_repeat_times
         self.emb_dropout_prob = emb_dropout_prob
+        self.fusion_mode = fusion_mode
+        self.use_behavior_gate = use_behavior_gate
         self.use_reciprocity = use_reciprocity
         self.time_scale_momentum = time_scale_momentum
         self.eps = 1e-6
@@ -81,6 +76,30 @@ class MYMODEL(torch.nn.Module):
             layer_norm_eps=self.layer_norm_eps,
         )
         output_dim = trm_input_dim
+
+        # ---- behavioral intent: source state z_t and the candidate-specific gate, as in CRAFTV4 ----
+        if self.use_behavior_gate:
+            self.behavior_attn = nn.Sequential(nn.Linear(trm_input_dim, self.hidden_size), nn.Tanh(),
+                                               nn.Linear(self.hidden_size, 1))
+            self.behavior_proj = nn.Sequential(nn.Linear(trm_input_dim, self.hidden_size),
+                                               nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps),
+                                               nn.Dropout(self.hidden_dropout_prob))
+            if self.fusion_mode == 'projected':
+                self.proj_c = nn.Sequential(nn.Linear(trm_input_dim, self.hidden_size),
+                                            nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps),
+                                            nn.Dropout(self.hidden_dropout_prob))
+                self.proj_z = nn.Sequential(nn.Linear(self.hidden_size, self.hidden_size),
+                                            nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps),
+                                            nn.Dropout(self.hidden_dropout_prob))
+                self.gate_layer = nn.Sequential(nn.Linear(self.hidden_size * 2, self.hidden_size), nn.Sigmoid())
+                output_dim = self.hidden_size
+            else:
+                # the simple fusion adds z_t to c_d directly, so the two must have the same width
+                assert trm_input_dim == self.hidden_size, "simple fusion requires input_cat_time_intervals=False"
+                self.gate_layer = nn.Sequential(nn.Linear(trm_input_dim + self.hidden_size, trm_input_dim),
+                                                nn.Sigmoid())
+
+        # ---- CRAFT head ----
         if self.output_cat_time_intervals or self.input_cat_time_intervals:
             self.time_projection = MLP(num_layers=1, input_dim=1, hidden_dim=self.hidden_size,
                                        output_dim=self.hidden_size, dropout=self.hidden_dropout_prob,
@@ -148,6 +167,19 @@ class MYMODEL(torch.nn.Module):
                 else:
                     self.time_scale.mul_(self.time_scale_momentum).add_((1.0 - self.time_scale_momentum) * batch_scale)
         return self.time_scale.clamp(min=self.eps)
+
+    def extract_source_behavioral_state(self, input_emb: torch.Tensor, valid_mask: torch.Tensor):
+        """
+        self-attentive pooling of the source's history into one behavioral state, as in CRAFTV4
+        :param input_emb: Tensor, shape (batch_size, max_seq_length, trm_input_dim)
+        :param valid_mask: Tensor, shape (batch_size, max_seq_length)
+        :return: Tensor, shape (batch_size, hidden_size)
+        """
+        attn_logits = self.behavior_attn(input_emb).masked_fill(~valid_mask.unsqueeze(-1), -1e9)
+        attn_weights = torch.softmax(attn_logits, dim=1)
+        # a source with an empty history pools to zero
+        attn_weights = attn_weights * valid_mask.any(dim=1).view(-1, 1, 1).float()
+        return self.behavior_proj((attn_weights * input_emb).sum(dim=1))
 
     def reciprocity_features(self, candidate_matches: torch.Tensor, src_is_sender: torch.Tensor,
                              normalized_elapsed: torch.Tensor):
@@ -230,6 +262,16 @@ class MYMODEL(torch.nn.Module):
         attention_mask = self.get_attention_mask(
             torch.ones(batch_size, num_candidates, device=src_neighb_seq.device), mask_b=valid_mask)
         context = self.cross_attention(test_dst_emb, attention_mask, input_emb, output_all_encoded_layers=False)[-1]
+
+        # ---- behavioral intent: gate the source state into each candidate's context ----
+        if self.use_behavior_gate:
+            z_t = self.extract_source_behavioral_state(input_emb, valid_mask)
+            z_t = z_t.unsqueeze(1).expand(-1, num_candidates, -1)
+            if self.fusion_mode == 'projected':
+                context = self.proj_c(context)
+                z_t = self.proj_z(z_t)
+            gate = self.gate_layer(torch.cat([context, z_t], dim=-1))
+            context = context + gate * z_t
 
         output = context
         if self.output_cat_time_intervals:

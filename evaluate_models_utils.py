@@ -34,7 +34,7 @@ def evaluate_model_link_prediction_multi_negs(model_name: str, model: nn.Module,
     # Ensures the random sampler uses a fixed seed for evaluation (i.e. we always sample the same negatives for validation / test set)
     assert evaluate_neg_edge_sampler.seed is not None
     evaluate_neg_edge_sampler.reset_random_state()
-    if model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel']:
+    if model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']:
         model[0].set_neighbor_sampler(neighbor_sampler)
     
     model.eval()
@@ -155,18 +155,17 @@ def evaluate_model_link_prediction_multi_negs(model_name: str, model: nn.Module,
                 positive_probabilities, negative_probabilities = model[0].predict(batch_data)
                 negative_probabilities = negative_probabilities.flatten().cpu().numpy()
                 positive_probabilities = positive_probabilities.flatten().cpu().numpy()
-            elif model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel']:
+            elif model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']:
                 src_neighb_seq, src_neighb_edge_ids, src_neighb_interact_times=neighbor_sampler.get_historical_neighbors_left(node_ids=batch_src_node_ids, node_interact_times=batch_node_interact_times, num_neighbors=num_neighbors)
                 neighbor_num=(src_neighb_seq!=0).sum(axis=1)
                 batch_neg_dst_node_ids = batch_neg_dst_node_ids.reshape(original_batch_size,-1)
                 pos_item = torch.from_numpy(batch_dst_node_ids)
                 neg_item = torch.from_numpy(batch_neg_dst_node_ids)
                 test_dst = torch.cat([pos_item.unsqueeze(1), neg_item], dim=1)
-                # CRAFTV5 attends to the historical neighbors of each candidate destination, MYMODEL counts
-                # their co-occurrence with the historical neighbors of the source
+                # CRAFTV5 attends to the historical neighbors of each candidate destination
                 is_craftv5 = model_name in ['CRAFTV5', 'CRAFTv5', 'craftv5']
-                is_mymodel = model_name in ['MYMODEL', 'MyModel', 'mymodel']
-                num_dst_neighbors = num_neighbors if is_craftv5 else (model.num_dst_neighbors if is_mymodel else 1)
+                is_mymodel = model_name in ['MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']
+                num_dst_neighbors = num_neighbors if is_craftv5 else 1
                 dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_dst_neighbors)
                 dst_last_update_time = torch.from_numpy(dst_last_update_time)
                 if is_craftv5:
@@ -174,9 +173,7 @@ def evaluate_model_link_prediction_multi_negs(model_name: str, model: nn.Module,
                 elif is_mymodel:
                     # the direction of each history entry, recovered from the edge ids the sampler returns
                     src_is_sender = get_edge_directions(full_data=full_data, node_ids=batch_src_node_ids, edge_ids=src_neighb_edge_ids)
-                    craftv5_inputs = dict(dst_neighb_seq=torch.from_numpy(dst_neighb_seq),
-                                          src_is_sender=torch.from_numpy(src_is_sender),
-                                          src_node_ids=torch.from_numpy(batch_src_node_ids))
+                    craftv5_inputs = dict(src_is_sender=torch.from_numpy(src_is_sender))
                 else:
                     craftv5_inputs = {}
                 positive_probabilities, negative_probabilities = model.predict(src_neighb_seq=torch.from_numpy(src_neighb_seq),
@@ -190,7 +187,7 @@ def evaluate_model_link_prediction_multi_negs(model_name: str, model: nn.Module,
                 positive_probabilities = positive_probabilities.flatten().cpu().numpy()
             else:
                 raise ValueError(f"Wrong value for model_name {model_name}!")
-            if model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'SASRec', 'SGNNHN']:
+            if model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'SASRec', 'SGNNHN']:
                 if 'BCE' in loss_type:
                 # get positive and negative probabilities, shape (batch_size, )
                     positive_probabilities = model[1](
@@ -232,7 +229,7 @@ def evaluate_model_link_prediction(model_name: str, model: nn.Module, neighbor_s
     # Ensures the random sampler uses a fixed seed for evaluation (i.e. we always sample the same negatives for validation / test set)
     assert evaluate_neg_edge_sampler.seed is not None
     evaluate_neg_edge_sampler.reset_random_state()
-    if model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel']:
+    if model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']:
         model[0].set_neighbor_sampler(neighbor_sampler)
 
     model.eval()
@@ -332,17 +329,16 @@ def evaluate_model_link_prediction(model_name: str, model: nn.Module, neighbor_s
                 batch_data=[torch.from_numpy(neighbor_node_ids), torch.from_numpy(neighbor_num), items]
                 positive_probabilities, negative_probabilities = model[0].predict(batch_data)
                 negative_probabilities = negative_probabilities.flatten()
-            elif model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel']:
+            elif model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']:
                 src_neighb_seq, src_neighb_edge_ids, src_neighb_interact_times=neighbor_sampler.get_historical_neighbors_left(node_ids=batch_src_node_ids, node_interact_times=batch_node_interact_times, num_neighbors=num_neighbors)
                 neighbor_num=(src_neighb_seq!=0).sum(axis=1)
                 pos_item = torch.from_numpy(batch_dst_node_ids)
                 neg_item = torch.from_numpy(batch_neg_dst_node_ids)
                 test_dst = torch.cat([pos_item.unsqueeze(1), neg_item.unsqueeze(1)], dim=1)
-                # CRAFTV5 attends to the historical neighbors of each candidate destination, MYMODEL counts
-                # their co-occurrence with the historical neighbors of the source
+                # CRAFTV5 attends to the historical neighbors of each candidate destination
                 is_craftv5 = model_name in ['CRAFTV5', 'CRAFTv5', 'craftv5']
-                is_mymodel = model_name in ['MYMODEL', 'MyModel', 'mymodel']
-                num_dst_neighbors = num_neighbors if is_craftv5 else (model.num_dst_neighbors if is_mymodel else 1)
+                is_mymodel = model_name in ['MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']
+                num_dst_neighbors = num_neighbors if is_craftv5 else 1
                 dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_dst_neighbors)
                 dst_last_update_time = torch.from_numpy(dst_last_update_time)
                 if is_craftv5:
@@ -350,9 +346,7 @@ def evaluate_model_link_prediction(model_name: str, model: nn.Module, neighbor_s
                 elif is_mymodel:
                     # the direction of each history entry, recovered from the edge ids the sampler returns
                     src_is_sender = get_edge_directions(full_data=full_data, node_ids=batch_src_node_ids, edge_ids=src_neighb_edge_ids)
-                    craftv5_inputs = dict(dst_neighb_seq=torch.from_numpy(dst_neighb_seq),
-                                          src_is_sender=torch.from_numpy(src_is_sender),
-                                          src_node_ids=torch.from_numpy(batch_src_node_ids))
+                    craftv5_inputs = dict(src_is_sender=torch.from_numpy(src_is_sender))
                 else:
                     craftv5_inputs = {}
                 positive_probabilities, negative_probabilities = model.predict(
@@ -368,7 +362,7 @@ def evaluate_model_link_prediction(model_name: str, model: nn.Module, neighbor_s
                 raise ValueError(f"Wrong value for model_name {model_name}!")
             if to_test_mask.sum() == 0:
                 continue
-            if model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'SASRec', 'SGNNHN']:
+            if model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'SASRec', 'SGNNHN']:
                 if 'BCE' in loss_type:
                 # get positive and negative probabilities, shape (batch_size, )
                     positive_probabilities = model[1](

@@ -1,8 +1,8 @@
 """
-Minimal ablation of MYMODEL on uci, wikipedia and Flickr.
+Minimal ablation of MYMODEL (CRAFT + reciprocity readout) on uci, wikipedia and Flickr.
 
-Every variant uses the best configs (--load_best_configs), so the only difference between rows is the
-module that is switched off. The last row switches every addition off, which reproduces CRAFT.
+Both variants use the best configs (--load_best_configs), so the only difference between the rows is the
+reciprocity readout. Switching it off reproduces CRAFT.
 
     python run_ablation.py                 # train everything, then print the table
     python run_ablation.py --report_only   # only collect the saved results and print the table
@@ -20,13 +20,8 @@ DATASETS = ['uci', 'wikipedia', 'Flickr']
 
 # (row name, version tag, extra flags)
 VARIANTS = [
-    ('MYMODEL (full)', 'abl_full', []),
-    ('w/o direction', 'abl_nodir', ['--no_direction']),
-    ('w/o reciprocity', 'abl_norecip', ['--no_reciprocity']),
-    ('w/o structure', 'abl_nostruct', ['--no_structural_bias', '--no_structural_features']),
-    ('w/o inner product', 'abl_noip', ['--no_inner_product']),
-    ('CRAFT (all off)', 'abl_craft', ['--no_direction', '--no_reciprocity', '--no_structural_bias',
-                                      '--no_structural_features', '--no_inner_product']),
+    ('MYMODEL (CRAFT + reciprocity)', 'recip', []),
+    ('CRAFT (w/o reciprocity)', 'craft', ['--no_reciprocity']),
 ]
 
 METRICS = [('mrr', 'MRR'), ('average_precision', 'AP'), ('roc_auc', 'AUC')]
