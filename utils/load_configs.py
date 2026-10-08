@@ -93,6 +93,8 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--fusion_mode', type=str, default='projected', choices=['projected', 'simple'], help='fusion mode for CRAFTV4 (projected or simple)')
     parser.add_argument('--no_reciprocity', action='store_true', default=False, help='ablate the reciprocity readout in MYMODEL and CRAFTV7, which makes MYMODEL identical to CRAFT and CRAFTV7 identical to CRAFTV4')
     parser.add_argument('--no_behavior_gate', action='store_true', default=False, help='ablate the behavioral-intent gated fusion in CRAFTV7, which makes CRAFTV7 identical to MYMODEL')
+    parser.add_argument('--no_closure', action='store_true', default=False, help='ablate the collaborative closure readout in CRAFTV8, which makes CRAFTV8 identical to CRAFT')
+    parser.add_argument('--closure_window', type=int, default=1, help='how many interactions ahead a co-transition i -> d may reach in the closure readout of CRAFTV8')
     try:
         args = parser.parse_args()
         args.device = f'cuda:{args.gpu}' if torch.cuda.is_available() and args.gpu >= 0 else 'cpu'
@@ -275,7 +277,8 @@ def load_link_prediction_best_configs(args: argparse.Namespace):
             args.dropout = 0.1
     elif args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3',
                              'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5',
-                             'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']:
+                             'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7',
+                             'CRAFTV8', 'CRAFTv8', 'craftv8']:
         # the per-dataset budget reported for CRAFT, shared by every CRAFT-family model so that they are all
         # trained under the same settings:
         # (num_neighbors, hidden_dropout, attn_dropout_prob, emb_dropout_prob, num_layers, batch_size, embedding_size)

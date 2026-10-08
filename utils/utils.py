@@ -574,6 +574,46 @@ def get_dst_neighbors(neighbor_sampler: NeighborSampler, test_dst: torch.Tensor,
     dst_last_update_times[~has_neighbor.any(axis=1)] = -100000
     return dst_neighb_seq, dst_neighb_interact_times, dst_last_update_times.reshape(len(test_dst), -1)
 
+
+def build_transition_index(data: Data, window: int = 1, num_ids: int = None):
+    """
+    index every co-transition i -> d of the data, a node interacting with d within window interactions after
+    interacting with i, so that CRAFTV8 can count the co-transitions of a pair before any time with two binary
+    searches. Queries only count co-transitions strictly before the prediction time, and as with the neighbor
+    samplers an index is built from the full data for evaluation, while training uses one built from the training
+    edges only.
+    :param data: Data, the interactions, as (src, dst, time) with src the node whose sequence is followed
+    :param window: int, how many interactions ahead a co-transition may reach
+    :param num_ids: int, the multiplier of the pair codes, larger than every node id; pass the same value to indexes
+    that are queried with the same codes, by default the largest node id of data plus one
+    :return: dict with
+        pairs: ndarray of int64, sorted distinct pair codes i * num_ids + d
+        codes: ndarray of int64, sorted pair_index * (num_unique_times + 1) + time rank, one per co-transition
+        times: ndarray of float64, the time of each co-transition, aligned with codes
+        unique_times: ndarray of float64, sorted distinct co-transition times
+        num_ids: int, the multiplier of the pair codes
+    """
+    order = np.lexsort((data.node_interact_times, data.src_node_ids))
+    srcs, dsts, times = data.src_node_ids[order], data.dst_node_ids[order], data.node_interact_times[order]
+    prev_nodes, next_nodes, transition_times = [], [], []
+    for step in range(1, window + 1):
+        same_src = srcs[step:] == srcs[:-step]
+        prev_nodes.append(dsts[:-step][same_src])
+        next_nodes.append(dsts[step:][same_src])
+        transition_times.append(times[step:][same_src])
+    prev_nodes, next_nodes = np.concatenate(prev_nodes), np.concatenate(next_nodes)
+    transition_times = np.concatenate(transition_times).astype(np.float64)
+
+    if num_ids is None:
+        num_ids = int(max(data.src_node_ids.max(), data.dst_node_ids.max())) + 1
+    pairs, pair_index = np.unique(prev_nodes.astype(np.int64) * num_ids + next_nodes.astype(np.int64), return_inverse=True)
+    unique_times, time_rank = np.unique(transition_times, return_inverse=True)
+    codes = pair_index.astype(np.int64) * (len(unique_times) + 1) + time_rank.astype(np.int64)
+    sorted_order = np.argsort(codes, kind='stable')
+    return {'pairs': pairs, 'codes': codes[sorted_order], 'times': transition_times[sorted_order],
+            'unique_times': unique_times, 'num_ids': num_ids}
+
+
 class NeighborSamplerWindow(NeighborSampler):
     def __init__(self,num_nodes,fix_window_size=20, device: str = 'cpu',undirected=True, time_scaling_factor=0.1):
         super().__init__()
