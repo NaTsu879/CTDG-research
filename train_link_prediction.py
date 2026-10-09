@@ -24,7 +24,7 @@ from models.CRAFTV7 import CRAFTV7
 from models.CRAFTV8 import CRAFTV8
 from models.modules import MergeLayer, MulMergeLayer, BPRLoss
 from utils.utils import set_random_seed, convert_to_gpu, get_parameter_sizes, create_optimizer
-from utils.utils import get_neighbor_sampler, get_dst_neighbors, get_edge_directions, build_transition_index, NegativeEdgeSampler
+from utils.utils import get_neighbor_sampler, get_dst_neighbors, get_edge_directions, build_history_memory, NegativeEdgeSampler
 from evaluate_models_utils import evaluate_model_link_prediction
 from evaluate_models_utils import evaluate_model_link_prediction_multi_negs
 from utils.metrics import get_link_prediction_metrics
@@ -135,6 +135,7 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                 # CRAFTV5 attends to the historical neighbors of each candidate destination
                 is_craftv5 = args.model_name in ['CRAFTV5', 'CRAFTv5', 'craftv5']
                 is_mymodel = args.model_name in ['MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']
+                is_craftv8 = args.model_name in ['CRAFTV8', 'CRAFTv8', 'craftv8']
                 num_dst_neighbors = args.num_neighbors if is_craftv5 else 1
                 dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=train_neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_dst_neighbors)
                 dst_last_update_time = torch.from_numpy(dst_last_update_time)
@@ -144,6 +145,9 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                     # the direction of each history entry, recovered from the edge ids the sampler returns
                     src_is_sender = get_edge_directions(full_data=full_data, node_ids=batch_src_node_ids, edge_ids=src_neighb_edge_ids)
                     craftv5_inputs = dict(src_is_sender=torch.from_numpy(src_is_sender))
+                elif is_craftv8:
+                    # the long-range memory is read for the pair (source, candidate)
+                    craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids))
                 else:
                     craftv5_inputs = {}
                 loss, predicts, labels = model.calculate_loss(src_neighb_seq=torch.from_numpy(src_neighb_seq),
@@ -426,15 +430,15 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
             num_output_layer=args.num_output_layer,
             emb_dropout_prob=args.emb_dropout_prob,
             skip_connection=args.skip_connection,
-            use_closure=not args.no_closure
+            use_history_memory=not args.no_history_memory
         )
-        if not args.no_closure:
+        if not args.no_history_memory:
             # as with the neighbor samplers, training only sees the training edges and evaluation sees all edges;
-            # queries only count co-transitions before the prediction time
+            # queries only count events before the prediction time
             num_ids = int(max(full_data.src_node_ids.max(), full_data.dst_node_ids.max())) + 1
-            dynamic_backbone.set_transition_index(
-                train_transition_index=build_transition_index(train_data, window=args.closure_window, num_ids=num_ids),
-                full_transition_index=build_transition_index(full_data, window=args.closure_window, num_ids=num_ids))
+            dynamic_backbone.set_history_memory(train_memory=build_history_memory(train_data, num_ids=num_ids),
+                                                full_memory=build_history_memory(full_data, num_ids=num_ids),
+                                                num_ids=num_ids)
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")
     if args.merge in ['cat']:

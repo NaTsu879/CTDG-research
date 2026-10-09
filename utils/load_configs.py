@@ -93,8 +93,7 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--fusion_mode', type=str, default='projected', choices=['projected', 'simple'], help='fusion mode for CRAFTV4 (projected or simple)')
     parser.add_argument('--no_reciprocity', action='store_true', default=False, help='ablate the reciprocity readout in MYMODEL and CRAFTV7, which makes MYMODEL identical to CRAFT and CRAFTV7 identical to CRAFTV4')
     parser.add_argument('--no_behavior_gate', action='store_true', default=False, help='ablate the behavioral-intent gated fusion in CRAFTV7, which makes CRAFTV7 identical to MYMODEL')
-    parser.add_argument('--no_closure', action='store_true', default=False, help='ablate the collaborative closure readout in CRAFTV8, which makes CRAFTV8 identical to CRAFT')
-    parser.add_argument('--closure_window', type=int, default=1, help='how many interactions ahead a co-transition i -> d may reach in the closure readout of CRAFTV8')
+    parser.add_argument('--no_history_memory', action='store_true', default=False, help='ablate the long-range memory readout in CRAFTV8, which makes CRAFTV8 identical to CRAFT')
     try:
         args = parser.parse_args()
         args.device = f'cuda:{args.gpu}' if torch.cuda.is_available() and args.gpu >= 0 else 'cpu'

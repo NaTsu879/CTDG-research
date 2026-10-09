@@ -165,6 +165,7 @@ def evaluate_model_link_prediction_multi_negs(model_name: str, model: nn.Module,
                 # CRAFTV5 attends to the historical neighbors of each candidate destination
                 is_craftv5 = model_name in ['CRAFTV5', 'CRAFTv5', 'craftv5']
                 is_mymodel = model_name in ['MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']
+                is_craftv8 = model_name in ['CRAFTV8', 'CRAFTv8', 'craftv8']
                 num_dst_neighbors = num_neighbors if is_craftv5 else 1
                 dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_dst_neighbors)
                 dst_last_update_time = torch.from_numpy(dst_last_update_time)
@@ -174,6 +175,9 @@ def evaluate_model_link_prediction_multi_negs(model_name: str, model: nn.Module,
                     # the direction of each history entry, recovered from the edge ids the sampler returns
                     src_is_sender = get_edge_directions(full_data=full_data, node_ids=batch_src_node_ids, edge_ids=src_neighb_edge_ids)
                     craftv5_inputs = dict(src_is_sender=torch.from_numpy(src_is_sender))
+                elif is_craftv8:
+                    # the long-range memory is read for the pair (source, candidate)
+                    craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids))
                 else:
                     craftv5_inputs = {}
                 positive_probabilities, negative_probabilities = model.predict(src_neighb_seq=torch.from_numpy(src_neighb_seq),
@@ -338,6 +342,7 @@ def evaluate_model_link_prediction(model_name: str, model: nn.Module, neighbor_s
                 # CRAFTV5 attends to the historical neighbors of each candidate destination
                 is_craftv5 = model_name in ['CRAFTV5', 'CRAFTv5', 'craftv5']
                 is_mymodel = model_name in ['MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']
+                is_craftv8 = model_name in ['CRAFTV8', 'CRAFTv8', 'craftv8']
                 num_dst_neighbors = num_neighbors if is_craftv5 else 1
                 dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_dst_neighbors)
                 dst_last_update_time = torch.from_numpy(dst_last_update_time)
@@ -347,6 +352,9 @@ def evaluate_model_link_prediction(model_name: str, model: nn.Module, neighbor_s
                     # the direction of each history entry, recovered from the edge ids the sampler returns
                     src_is_sender = get_edge_directions(full_data=full_data, node_ids=batch_src_node_ids, edge_ids=src_neighb_edge_ids)
                     craftv5_inputs = dict(src_is_sender=torch.from_numpy(src_is_sender))
+                elif is_craftv8:
+                    # the long-range memory is read for the pair (source, candidate)
+                    craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids))
                 else:
                     craftv5_inputs = {}
                 positive_probabilities, negative_probabilities = model.predict(
