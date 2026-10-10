@@ -176,8 +176,9 @@ def evaluate_model_link_prediction_multi_negs(model_name: str, model: nn.Module,
                     src_is_sender = get_edge_directions(full_data=full_data, node_ids=batch_src_node_ids, edge_ids=src_neighb_edge_ids)
                     craftv5_inputs = dict(src_is_sender=torch.from_numpy(src_is_sender))
                 elif is_craftv8:
-                    # the long-range memory is read for the pair (source, candidate)
-                    craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids))
+                    # the readouts need the source ids and the direction of each history entry
+                    src_is_sender = get_edge_directions(full_data=full_data, node_ids=batch_src_node_ids, edge_ids=src_neighb_edge_ids)
+                    craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids), src_is_sender=torch.from_numpy(src_is_sender))
                 else:
                     craftv5_inputs = {}
                 positive_probabilities, negative_probabilities = model.predict(src_neighb_seq=torch.from_numpy(src_neighb_seq),
@@ -353,8 +354,9 @@ def evaluate_model_link_prediction(model_name: str, model: nn.Module, neighbor_s
                     src_is_sender = get_edge_directions(full_data=full_data, node_ids=batch_src_node_ids, edge_ids=src_neighb_edge_ids)
                     craftv5_inputs = dict(src_is_sender=torch.from_numpy(src_is_sender))
                 elif is_craftv8:
-                    # the long-range memory is read for the pair (source, candidate)
-                    craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids))
+                    # the readouts need the source ids and the direction of each history entry
+                    src_is_sender = get_edge_directions(full_data=full_data, node_ids=batch_src_node_ids, edge_ids=src_neighb_edge_ids)
+                    craftv5_inputs = dict(src_node_ids=torch.from_numpy(batch_src_node_ids), src_is_sender=torch.from_numpy(src_is_sender))
                 else:
                     craftv5_inputs = {}
                 positive_probabilities, negative_probabilities = model.predict(

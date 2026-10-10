@@ -91,9 +91,12 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--use_mrr_val', action='store_true', default=False, help='whether to use mrr for validation')
     parser.add_argument('--skip_connection', action='store_true', default=False, help='whether to use skip connection in CRAFT')
     parser.add_argument('--fusion_mode', type=str, default='projected', choices=['projected', 'simple'], help='fusion mode for CRAFTV4 (projected or simple)')
-    parser.add_argument('--no_reciprocity', action='store_true', default=False, help='ablate the reciprocity readout in MYMODEL and CRAFTV7, which makes MYMODEL identical to CRAFT and CRAFTV7 identical to CRAFTV4')
+    parser.add_argument('--no_reciprocity', action='store_true', default=False, help='ablate the reciprocity readout in MYMODEL, CRAFTV7 and CRAFTV8, which makes MYMODEL identical to CRAFT and CRAFTV7 identical to CRAFTV4')
     parser.add_argument('--no_behavior_gate', action='store_true', default=False, help='ablate the behavioral-intent gated fusion in CRAFTV7, which makes CRAFTV7 identical to MYMODEL')
-    parser.add_argument('--no_history_memory', action='store_true', default=False, help='ablate the long-range memory readout in CRAFTV8, which makes CRAFTV8 identical to CRAFT')
+    parser.add_argument('--no_history_memory', action='store_true', default=False, help='ablate the long-range memory readout in CRAFTV8')
+    parser.add_argument('--no_covisit', action='store_true', default=False, help='ablate the co-visit closure readout in CRAFTV8; with --no_reciprocity and --no_history_memory too, CRAFTV8 is identical to CRAFT')
+    parser.add_argument('--covisit_window', type=int, default=20, help='largest number of interactions apart two visits of one source may be to count as a co-visit in CRAFTV8')
+    parser.add_argument('--covisit_max_pairs', type=int, default=100000000, help='cap on the co-visits indexed by CRAFTV8; the window stops growing before it is exceeded, so the index fits in host memory')
     try:
         args = parser.parse_args()
         args.device = f'cuda:{args.gpu}' if torch.cuda.is_available() and args.gpu >= 0 else 'cpu'

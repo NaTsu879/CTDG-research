@@ -615,6 +615,43 @@ def build_history_memory(data: Data, num_ids: int):
             'node': build_event_index(node_keys, node_times)}
 
 
+def build_covisit_index(data: Data, num_ids: int, window: int = 20, max_pairs: int = 100_000_000):
+    """
+    the co-visit index of CRAFTV8: every unordered pair (i, d) of distinct nodes that one source interacted with
+    within window interactions of each other, known from the time of the later interaction, so that the number
+    of co-visits of a pair before any time is found with binary searches. Also indexes every endpoint by node, for
+    the popularity of the items. As with the neighbor samplers, the index used in training is built from the
+    training edges and the one used in evaluation from all edges, and queries only count co-visits strictly
+    before the prediction time.
+    :param data: Data, the interactions, as (src, dst, time) with src the node whose sequence is followed
+    :param num_ids: int, the multiplier of the pair keys min * num_ids + max, larger than every node id
+    :param window: int, how many interactions apart two visits of one source may be to count as a co-visit
+    :param max_pairs: int, cap on the number of indexed co-visits; the window stops growing before it is exceeded,
+    so dense datasets (ML-20M) get a shorter window and the index fits in host memory
+    :return: dict with the pair index and the node index, as returned by build_event_index
+    """
+    order = np.lexsort((data.node_interact_times, data.src_node_ids))
+    srcs, dsts, times = data.src_node_ids[order], data.dst_node_ids[order], data.node_interact_times[order]
+    pair_keys, pair_times, num_pairs, used_window = [], [], 0, 0
+    for step in range(1, window + 1):
+        if step >= len(srcs):
+            break
+        keep = (srcs[step:] == srcs[:-step]) & (dsts[step:] != dsts[:-step])
+        if not keep.any() or (used_window > 0 and num_pairs + int(keep.sum()) > max_pairs):
+            break
+        num_pairs += int(keep.sum())
+        used_window = step
+        first, second = dsts[:-step][keep].astype(np.int64), dsts[step:][keep].astype(np.int64)
+        pair_keys.append(np.minimum(first, second) * num_ids + np.maximum(first, second))
+        pair_times.append(times[step:][keep])
+    print(f'co-visit index: window {used_window} of {window}, {num_pairs} co-visits')
+    pair_keys = np.concatenate(pair_keys) if pair_keys else np.zeros(0, dtype=np.int64)
+    pair_times = np.concatenate(pair_times) if pair_times else np.zeros(0, dtype=np.float64)
+    node_keys = np.concatenate([data.src_node_ids, data.dst_node_ids])
+    node_times = np.concatenate([data.node_interact_times, data.node_interact_times])
+    return {'pair': build_event_index(pair_keys, pair_times), 'node': build_event_index(node_keys, node_times)}
+
+
 class NeighborSamplerWindow(NeighborSampler):
     def __init__(self,num_nodes,fix_window_size=20, device: str = 'cpu',undirected=True, time_scaling_factor=0.1):
         super().__init__()
