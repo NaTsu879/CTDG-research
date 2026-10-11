@@ -74,8 +74,8 @@ class CRAFTV8(torch.nn.Module):
 
     As with the neighbor samplers, the indexes used in training mode are built from the training edges only
     and the ones used in evaluation mode from all edges, and only events strictly before the prediction time
-    are counted, so nothing leaks from the future or from the evaluation splits. The co-visit index can be
-    large, so it is kept in host memory and queried on the CPU.
+    are counted, so nothing leaks from the future or from the evaluation splits. The co-visit index is queried on
+    the GPU with the model when it fits under --covisit_gpu_max_gb, and in host memory on the CPU otherwise.
 
     Training is untouched: one negative per positive from the same collision-checked sampler, the
     same BPR/BCE loss, validation on average precision and MRR at test only, as in the CRAFT paper.
@@ -83,6 +83,7 @@ class CRAFTV8(torch.nn.Module):
 
     MEMORY_KINDS = ('pair', 'node')
     MEMORY_TENSORS = ('keys', 'codes', 'unique_times', 'times')
+    COVISIT_TENSORS = ('keys', 'codes', 'unique_times')
 
     def __init__(self, n_layers, n_heads, hidden_size, hidden_dropout_prob, attn_dropout_prob, hidden_act,
                  layer_norm_eps, initializer_range, n_nodes, max_seq_length, device, loss_type, use_pos=True,
@@ -170,13 +171,19 @@ class CRAFTV8(torch.nn.Module):
                     for name in self.MEMORY_TENSORS:
                         self.register_buffer(f'{split}_{kind}_{name}', None, persistent=False)
             self.memory_num_ids = None
+            # the window multiples as a buffer, so they are not copied to the device on every batch
+            self.register_buffer('window_scales_tensor', torch.tensor(self.window_scales, dtype=torch.float64), persistent=False)
         if self.use_covisit:
             # sum, max, share, cosine sum and max, recency-weighted sum and cosine sum per kernel
             self.num_readout_features += 2 * self.num_decay_kernels + 5
             self.covisit_log_tau = nn.Parameter(torch.linspace(math.log(0.1), math.log(10.0), self.num_decay_kernels))
-            # the co-visit indexes, set by set_covisit_index and kept on the CPU (not buffers, so that moving the
-            # model to the GPU leaves them in host memory)
-            self.covisit_index = {'train': None, 'full': None}
+            # the co-visit indexes, set by set_covisit_index: as buffers, so that they move to the GPU with the model
+            # and are queried there, or, when they are too large for the GPU, in host memory and queried on the CPU
+            for split in ('train', 'full'):
+                for kind in self.MEMORY_KINDS:
+                    for name in self.COVISIT_TENSORS:
+                        self.register_buffer(f'covisit_{split}_{kind}_{name}', None, persistent=False)
+            self.covisit_host_index = {'train': None, 'full': None}
             self.covisit_num_ids = None
         if self.num_readout_features > 0:
             self.readout_head = MLP(num_layers=2, input_dim=self.num_readout_features, hidden_dim=self.hidden_size,
@@ -220,17 +227,38 @@ class CRAFTV8(torch.nn.Module):
                 for name, array in memory[kind].items():
                     setattr(self, f'{split}_{kind}_{name}', torch.from_numpy(array))
 
-    def set_covisit_index(self, train_index: dict, full_index: dict, num_ids: int):
+    def set_covisit_index(self, train_index: dict, full_index: dict, num_ids: int, max_device_gb: float = None):
         """
         :param train_index: dict, as returned by utils.utils.build_covisit_index on the training edges, used in
         training mode so that training never sees a validation or test edge
         :param full_index: dict, the same on all edges, used in evaluation mode
         :param num_ids: int, the multiplier of the pair keys min * num_ids + max used by both
+        :param max_device_gb: float, the largest size of both indexes together that is moved to the model's device;
+        larger indexes stay in host memory and are queried on the CPU. None always moves them
         """
         self.covisit_num_ids = num_ids
+        size_gb = sum(array.nbytes for index in (train_index, full_index) for kind in index.values()
+                      for array in kind.values()) / 1e9
+        on_device = max_device_gb is None or size_gb <= max_device_gb
+        print(f'co-visit indexes: {size_gb:.2f} GB, queried on the {"model device" if on_device else "CPU"}')
         for split, index in (('train', train_index), ('full', full_index)):
-            self.covisit_index[split] = {kind: {name: torch.from_numpy(array) for name, array in index[kind].items()}
-                                         for kind in index}
+            tensors = {kind: {name: torch.from_numpy(array) for name, array in index[kind].items()} for kind in index}
+            if on_device:
+                for kind in tensors:
+                    for name, tensor in tensors[kind].items():
+                        setattr(self, f'covisit_{split}_{kind}_{name}', tensor)
+            else:
+                self.covisit_host_index[split] = tensors
+
+    def _covisit_index(self):
+        """
+        the co-visit index of the current mode, on the model's device or in host memory, or None when it is not set
+        """
+        split = 'train' if self.training else 'full'
+        if getattr(self, f'covisit_{split}_pair_keys') is not None:
+            return {kind: {name: getattr(self, f'covisit_{split}_{kind}_{name}') for name in self.COVISIT_TENSORS}
+                    for kind in self.MEMORY_KINDS}
+        return self.covisit_host_index[split]
 
     def _memory_index(self, kind: str):
         split = 'train' if self.training else 'full'
@@ -247,16 +275,20 @@ class CRAFTV8(torch.nn.Module):
 
     def _get_time_scale(self, elapsed_times: torch.Tensor, valid_mask: torch.Tensor):
         """
-        running median of the observed elapsed times, updated during training only
+        running median of the observed elapsed times, updated during training only; written without host
+        synchronization (no boolean indexing or .item()), so the GPU never waits on it
         """
-        if self.training and valid_mask.any():
+        if self.training:
             with torch.no_grad():
-                batch_scale = elapsed_times[valid_mask].median().clamp(min=self.eps).view(1)
-                if self.time_scale_initialized.item() == 0:
-                    self.time_scale.copy_(batch_scale)
-                    self.time_scale_initialized.fill_(1.0)
-                else:
-                    self.time_scale.mul_(self.time_scale_momentum).add_((1.0 - self.time_scale_momentum) * batch_scale)
+                batch_scale = torch.nanmedian(elapsed_times.masked_fill(~valid_mask, float('nan'))).clamp(min=self.eps).view(1)
+                updated = torch.where(self.time_scale_initialized > 0,
+                                      self.time_scale_momentum * self.time_scale + (1.0 - self.time_scale_momentum) * batch_scale,
+                                      batch_scale)
+                # a batch with no valid history entry has a NaN median and leaves the scale unchanged
+                has_valid = ~torch.isnan(batch_scale)
+                self.time_scale.copy_(torch.where(has_valid, updated, self.time_scale))
+                self.time_scale_initialized.copy_(torch.where(has_valid, torch.ones_like(self.time_scale_initialized),
+                                                              self.time_scale_initialized))
         return self.time_scale.clamp(min=self.eps)
 
     def reciprocity_features(self, candidate_matches: torch.Tensor, src_is_sender: torch.Tensor,
@@ -293,7 +325,7 @@ class CRAFTV8(torch.nn.Module):
         :return: Tensor, shape (batch_size, num_candidates, 2 * len(window_scales) + 4)
         """
         t = cur_times.double().view(-1, 1, 1)
-        windows = time_scale.double() * torch.tensor(self.window_scales, dtype=torch.float64, device=t.device)
+        windows = time_scale.double() * self.window_scales_tensor
         # query times: the window starts, then the prediction time itself
         query_times = torch.cat([t - windows.view(1, 1, -1), t], dim=-1)
 
@@ -329,20 +361,22 @@ class CRAFTV8(torch.nn.Module):
         each history item, divided by the time scale
         :return: Tensor, shape (batch_size, num_candidates, 2 * num_decay_kernels + 5)
         """
-        index = self.covisit_index['train' if self.training else 'full']
+        index = self._covisit_index()
         device = items.device
-        items_cpu, dst_cpu = items.long().cpu(), test_dst.long().cpu()
-        times_cpu = cur_times.double().cpu()
+        # the queries run where the index lives: on the model's device when it fits there, otherwise on the CPU
+        index_device = index['pair']['keys'].device
+        query_items, query_dst = items.long().to(index_device), test_dst.long().to(index_device)
+        query_times = cur_times.double().to(index_device)
         item_valid = (items != 0).unsqueeze(1)
 
         # co-visits (i_l, d) before t, keyed by the unordered pair
-        h, c = items_cpu.unsqueeze(1), dst_cpu.unsqueeze(2)
+        h, c = query_items.unsqueeze(1), query_dst.unsqueeze(2)
         pair_keys = torch.minimum(h, c) * self.covisit_num_ids + torch.maximum(h, c)
-        counts, _ = count_events_before(index['pair'], pair_keys, times_cpu.view(-1, 1, 1))
+        counts, _ = count_events_before(index['pair'], pair_keys, query_times.view(-1, 1, 1))
         counts = counts.to(device).float() * item_valid.float()
         # popularity of the history items and of the candidates before t
-        item_pop, _ = count_events_before(index['node'], items_cpu, times_cpu.view(-1, 1))
-        dst_pop, _ = count_events_before(index['node'], dst_cpu, times_cpu.view(-1, 1))
+        item_pop, _ = count_events_before(index['node'], query_items, query_times.view(-1, 1))
+        dst_pop, _ = count_events_before(index['node'], query_dst, query_times.view(-1, 1))
         item_pop, dst_pop = item_pop.to(device).float(), dst_pop.to(device).float()
 
         closed = (counts > 0).float()
@@ -389,8 +423,10 @@ class CRAFTV8(torch.nn.Module):
 
         # ---- CRAFT: elapsed time of the candidate's last interaction ----
         if self.output_cat_time_intervals:
-            dst_last_update_intervals = cur_times.view(-1, 1) - dst_last_update_times
-            dst_last_update_intervals[dst_last_update_times < -1] = -100000
+            # candidates with no past interaction get CRAFT's sentinel, written without a host synchronization
+            dst_last_update_intervals = torch.where(dst_last_update_times < -1,
+                                                    torch.full_like(dst_last_update_times, -100000),
+                                                    cur_times.view(-1, 1) - dst_last_update_times)
             dst_node_time_intervals_feat = self.time_projection(dst_last_update_intervals.float().view(-1, 1)).view(
                 batch_size, num_candidates, -1)
             dst_node_time_intervals_feat = self.dropout(self.LayerNorm_time_intervals(dst_node_time_intervals_feat))
@@ -449,7 +485,7 @@ class CRAFTV8(torch.nn.Module):
                 else:
                     readout_features.append(self.memory_features(src_node_ids, raw_test_dst, cur_times, time_scale))
             if self.use_covisit:
-                if self.covisit_index['train' if self.training else 'full'] is None:
+                if self._covisit_index() is None:
                     readout_features.append(torch.zeros(batch_size, num_candidates, 2 * self.num_decay_kernels + 5,
                                                         device=logits.device))
                 else:

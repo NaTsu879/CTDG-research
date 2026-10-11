@@ -97,6 +97,7 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--no_covisit', action='store_true', default=False, help='ablate the co-visit closure readout in CRAFTV8; with --no_reciprocity and --no_history_memory too, CRAFTV8 is identical to CRAFT')
     parser.add_argument('--covisit_window', type=int, default=20, help='largest number of interactions apart two visits of one source may be to count as a co-visit in CRAFTV8')
     parser.add_argument('--covisit_max_pairs', type=int, default=100000000, help='cap on the co-visits indexed by CRAFTV8; the window stops growing before it is exceeded, so the index fits in host memory')
+    parser.add_argument('--covisit_gpu_max_gb', type=float, default=4.0, help='largest size of the CRAFTV8 co-visit indexes (both splits) that is kept on the GPU; larger ones are queried on the CPU, which is much slower')
     try:
         args = parser.parse_args()
         args.device = f'cuda:{args.gpu}' if torch.cuda.is_available() and args.gpu >= 0 else 'cpu'

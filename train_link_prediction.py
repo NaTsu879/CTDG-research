@@ -446,7 +446,7 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
             dynamic_backbone.set_covisit_index(
                 train_index=build_covisit_index(train_data, num_ids=num_ids, window=args.covisit_window, max_pairs=args.covisit_max_pairs),
                 full_index=build_covisit_index(full_data, num_ids=num_ids, window=args.covisit_window, max_pairs=args.covisit_max_pairs),
-                num_ids=num_ids)
+                num_ids=num_ids, max_device_gb=args.covisit_gpu_max_gb)
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")
     if args.merge in ['cat']:
