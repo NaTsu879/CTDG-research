@@ -1,0 +1,693 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{float}       % for [H] - pin tables exactly where written, no floating
+\usepackage{placeins}    % for \FloatBarrier
+
+% ---------- notation shortcuts ----------
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\softmax}{\operatorname{softmax}}
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\elt}{\odot}                 % element-wise product
+\newcommand{\concat}{\mathbin{\|}}       % concatenation
+\newcommand{\Emb}{\mathrm{Emb}}
+\newcommand{\LN}{\mathrm{LN}}
+\newcommand{\CA}{\mathrm{CrossAttn}}
+\newcommand{\pos}{\mathrm{PE}}
+
+\title{\textbf{CRAFT\,V3, V4, V5 and V8:\\ what each one changes relative to plain CRAFT}}
+\author{Notes tied to the code in \code{models/CRAFT*.py}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note explains, step by step and with pointers to the exact code, how
+\code{CRAFTV3}, \code{CRAFTV4} and \code{CRAFTV5} differ from the base
+\code{CRAFT} model for future--link prediction. All three keep CRAFT's overall
+recipe: embed the recent neighbours, cross--attend, glue on the time features,
+score with a small MLP, train with BPR/BCE. The \emph{only} thing that changes
+is how the ``edge representation'' vector is built. V3 rewrites the attention
+formula, V4 adds one summary vector and mixes it in through a gate, and V5 adds
+a second attention that runs in the opposite direction and blends the two.
+V8 leaves CRAFT's edge representation untouched and instead adds a correction to
+the final score, read from evidence outside CRAFT's history window: the
+direction of past interactions, the whole past of the pair, and other users'
+co--visits.
+Measured results on several datasets are at the end.
+\end{abstract}
+
+% ======================================================================
+\section{Symbols used everywhere}
+
+\begin{itemize}[nosep]
+  \item $B$ --- batch size (number of source events in one step).
+  \item $L=\code{num\_neighbors}$ --- how many recent neighbours we keep per node.
+  \item $D=\code{embedding\_size}$ --- size of every node vector.
+  \item $h=\code{num\_heads}$, and $d_h=D/h$ --- per--head size.
+  \item $N=1+n_{\text{neg}}$ --- candidates scored per source. Candidate $0$ is
+        the true next destination; the rest are negatives.
+  \item $\bm{s}\in\mathbb{Z}^{B\times L}$ --- \code{src\_neighb\_seq}: the source's
+        $L$ most recent neighbours (these are \emph{destination--role} nodes).
+  \item $\bm{d}\in\mathbb{Z}^{B\times N}$ --- \code{test\_dst}: the candidate
+        destination ids.
+  \item $\Emb(\cdot)$ --- the node embedding table \code{node\_embedding};
+        $\pos$ --- \code{position\_embedding}; $\LN$ --- \code{LayerNorm};
+        $\sigma$ --- the logistic sigmoid; $\elt$ --- element--wise product.
+\end{itemize}
+
+% ======================================================================
+\section{Base CRAFT, one step at a time}
+\label{sec:craft}
+
+Code: \code{models/CRAFT.py}, method \code{forward}.
+
+\begin{enumerate}[label=\textbf{C\arabic*.},leftmargin=3.2em]
+  \item \textbf{Embed the source's history} (the ``look--up table'' the
+        candidates will read from).
+        \[
+          \bm{H} \;=\; \LN\big(\Emb(\bm{s}) + \pos\big)\ \in\ \R^{B\times L\times D}.
+        \]
+        One row of $\bm{H}$ is one past neighbour, with a position marker added.
+
+  \item \textbf{Embed the candidates} (the ``questions'' we want answered).
+        \[
+          \bm{Q} \;=\; \LN\big(\Emb(\bm{d})\big)\ \in\ \R^{B\times N\times D}.
+        \]
+
+  \item \textbf{Cross--attention: every candidate reads the history.}
+        Inside one head, with $Q\in\R^{N\times d_h}$ and $K,V\in\R^{L\times d_h}$:
+        \begin{enumerate}[label=(\alph*),nosep]
+          \item raw match scores: \(\displaystyle S = \frac{QK^{\top}}{\sqrt{d_h}}\)\quad(shape $N\times L$);
+          \item hide padded history slots: \(S \leftarrow S + M\) (with $M_{ij}=-\infty$ where slot $j$ is padding);
+          \item turn scores into weights: \(A = \softmax(S)\) row--wise (each candidate's weights over the $L$ slots sum to $1$);
+          \item read the values: \(\text{context} = A\,V\)\quad(shape $N\times d_h$).
+        \end{enumerate}
+        Then the usual wrap--up: linear projection, dropout, $\LN$, add the
+        query back (residual), and a feed--forward block. Call the result
+        \[
+          \bm{O}\ \in\ \R^{B\times N\times D}.
+        \]
+        $\bm{O}$ is the \emph{edge representation}: one vector per
+        (source, candidate) pair.
+
+  \item \textbf{Attach the time features.} Compute the gap since each candidate
+        was last seen, \(\bm{\tau}=\phi_t(\code{cur\_times}-\code{dst\_last\_update\_times})\),
+        and (optionally) a ``how often has this candidate appeared in the
+        history'' count. Concatenate:
+        \(\bm{O} \concat \bm{\tau} \concat \cdots\).
+
+  \item \textbf{Score.} \(\hat{y} = \mathrm{MLP}_{\text{out}}(\bm{O}\concat\bm{\tau}\concat\cdots)\in\R^{B\times N\times 1}\).
+
+  \item \textbf{Loss.} BPR (or BCE), treating candidate $0$ as positive and the
+        rest as negatives.
+\end{enumerate}
+
+\paragraph{What V3/V4/V5 never touch.} Steps \textbf{C1, C2, C4, C5, C6} and the
+embedding table are identical in all variants. Every change is inside
+step \textbf{C3} --- the box that produces $\bm{O}$.
+
+% ======================================================================
+\section{CRAFT\,V3 --- attend twice, sharpen in between}
+\label{sec:v3}
+
+Code: \code{CustomMultiHeadCrossAttention.forward} in \code{models/CRAFTV3.py}.
+The rest of the model is copied from CRAFT unchanged.
+
+\paragraph{The one--sentence idea.}
+Run attention once just to see which past neighbours matter \emph{on average},
+shrink the unimportant ones, then run attention again for real.
+
+\paragraph{Step by step (one head).}
+Start from $Q\in\R^{N\times d_h}$, $K,V\in\R^{L\times d_h}$, mask $M$.
+
+\begin{enumerate}[label=\textbf{V3.\arabic*},leftmargin=3.6em]
+  \item \textbf{First attention weights.}
+        \[
+          A_1 \;=\; \softmax\!\Big(\frac{QK^{\top}}{\sqrt{d_h}} + M\Big)\ \in\ \R^{N\times L}.
+        \]
+        Row $i$ = how candidate $i$ would spread its attention over the $L$ slots.
+
+  \item \textbf{Average down to one profile.} Collapse the candidate axis by
+        taking the mean of each column:
+        \[
+          s_j \;=\; \frac{1}{N}\sum_{i=1}^{N}(A_1)_{ij},
+          \qquad \bm{s}=(s_1,\dots,s_L)\ \in\ \R^{L}.
+        \]
+        $s_j$ = ``how much did history slot $j$ matter, averaged over all
+        candidates.'' This single profile is shared by everyone in the row.
+
+  \item \textbf{Normalise (a safety step).}
+        \[
+          \hat{s}_j \;=\; \frac{s_j}{\sum_{k=1}^{L} s_k + \varepsilon}.
+        \]
+        Each $A_1$ row already sums to $1$, so $\sum_k s_k$ is already $\approx 1$;
+        the $\varepsilon$ just avoids dividing by zero.
+
+  \item \textbf{Shrink the keys of unimportant slots.} Scale every key vector by
+        its profile weight:
+        \[
+          K'_j \;=\; \hat{s}_j\, K_j \qquad (j=1,\dots,L).
+        \]
+        A slot with a small $\hat{s}_j$ now has a tiny key, so no candidate can
+        attend to it much.
+
+  \item \textbf{Second attention, for real.}
+        \[
+          A_2 \;=\; \softmax\!\Big(\frac{QK'^{\top}}{\sqrt{d_h}} + M\Big),
+          \qquad
+          \text{context} \;=\; \mathrm{dropout}(A_2)\,V.
+        \]
+
+  \item \textbf{Wrap--up} (projection, dropout, $\LN$, residual, feed--forward):
+        exactly as in CRAFT step \textbf{C3}.
+\end{enumerate}
+
+\paragraph{A shortcut view.} Because $K'_j=\hat{s}_j K_j$, step V3.5 is the same
+as taking the first--pass raw scores and multiplying column $j$ by $\hat{s}_j$
+before the softmax:
+\[
+  (\text{score}_2)_{ij} \;=\; \hat{s}_j\cdot\frac{q_i\cdot k_j}{\sqrt{d_h}} + M_{ij}.
+\]
+So a slot that got little average attention is pushed toward zero for
+\emph{every} candidate.
+
+\paragraph{In plain words.}
+Plain CRAFT lets each candidate look at the history however it likes. V3 first
+holds a vote --- ``which of my last $L$ interactions are generally useful right
+now?'' --- and then makes all candidates look through that same sharpened lens.
+Good when a few past items clearly dominate; bad when the history is genuinely
+varied, because the shared lens throws away detail that some candidates needed.
+
+% ======================================================================
+\section{CRAFT\,V4 --- add a ``recent intent'' vector through a gate}
+\label{sec:v4}
+
+Code: \code{models/CRAFTV4.py}. The original \code{CrossAttention} is reused
+as--is; new parts are \code{behavior\_attn} / \code{behavior\_proj} (build the
+vector) and \code{proj\_c} / \code{proj\_z} / \code{gate\_layer} (mix it in).
+Mode chosen by \code{--fusion\_mode} (\code{projected} default).
+
+\paragraph{The one--sentence idea.}
+Keep CRAFT's answer, then gently correct it using one vector that summarises
+what the source has been doing lately.
+
+\paragraph{Part A --- CRAFT's answer, unchanged.}
+\[
+  \bm{c}_d \;=\; \CA(\bm{Q},\ \bm{H})\ \in\ \R^{B\times N\times D}
+  \qquad\text{(CRAFT step \textbf{C3}).}
+\]
+
+\paragraph{Part B --- build the ``recent intent'' vector $\bm{z}_t$.}
+This pools the \emph{same} history $\bm{H}$ into a single vector per source
+(\code{extract\_source\_behavioral\_state}).
+
+\begin{enumerate}[label=\textbf{V4.\arabic*},leftmargin=3.6em]
+  \item \textbf{Score each history slot} with a tiny 2--layer network:
+        \[
+          e_\ell \;=\; \bm{w}_2^{\top}\tanh\!\big(W_1\,\bm{H}_\ell\big)\ \in\ \R
+          \qquad (\ell=1,\dots,L).
+        \]
+
+  \item \textbf{Mask padding and normalise} into weights that sum to $1$:
+        \[
+          \alpha_\ell \;=\; \softmax_\ell(e_\ell),
+          \qquad \alpha_\ell = 0 \text{ if slot }\ell\text{ is padding}.
+        \]
+
+  \item \textbf{Weighted sum} of the history:
+        \[
+          \bm{p} \;=\; \sum_{\ell=1}^{L}\alpha_\ell\,\bm{H}_\ell\ \in\ \R^{B\times D}.
+        \]
+
+  \item \textbf{Project} to get the final vector:
+        \[
+          \bm{z}_t \;=\; \mathrm{Dropout}\big(\LN(W_z\,\bm{p})\big)\ \in\ \R^{B\times D}.
+        \]
+        One vector per source, the same for all $N$ candidates.
+\end{enumerate}
+
+\paragraph{Part C --- gated mix (\code{projected} mode).}
+\begin{enumerate}[label=\textbf{V4.\arabic*},leftmargin=3.6em,start=5]
+  \item \textbf{Put both on the same footing.}
+        \[
+          \tilde{\bm{c}} = \mathrm{proj}_c(\bm{c}_d),
+          \qquad
+          \tilde{\bm{z}} = \mathrm{proj}_z(\bm{z}_t)\ \text{(copied to all $N$ candidates)},
+          \qquad \tilde{\bm{c}},\tilde{\bm{z}}\in\R^{B\times N\times D}.
+        \]
+
+  \item \textbf{Compute the gate} --- one number in $(0,1)$ per feature channel:
+        \[
+          \bm{g}_d \;=\; \sigma\!\big(W_g\,[\,\tilde{\bm{c}}\concat\tilde{\bm{z}}\,]\big)\ \in\ (0,1)^{B\times N\times D}.
+        \]
+
+  \item \textbf{Combine} --- CRAFT's vector plus a gated dose of intent:
+        \[
+          \bm{h}_d \;=\; \tilde{\bm{c}} \;+\; \bm{g}_d \elt \tilde{\bm{z}}.
+        \]
+\end{enumerate}
+$\bm{h}_d$ then takes the place of $\bm{O}$; steps \textbf{C4--C6} are unchanged.
+(\code{simple} mode does the same with no projections:
+$\bm{h}_d=\bm{c}_d+\sigma(W_g[\bm{c}_d\concat\bm{z}_t])\elt\bm{z}_t$.)
+
+\paragraph{In plain words.}
+$\bm{c}_d$ answers ``does this candidate fit the source's history?''. $\bm{z}_t$
+is a one--vector fingerprint of ``what the source is into lately,'' identical for
+all candidates. The gate decides, channel by channel, how much fingerprint to
+add: $0$ means ignore it (and because of the $+\tilde{\bm{c}}$ term we are back
+to plain CRAFT), $1$ means add it fully. The extra term is only ever
+\emph{added} on top of CRAFT, so V4 cannot damage CRAFT's own answer --- which
+is why it is the safest variant.
+
+% ======================================================================
+\section{CRAFT\,V5 --- also attend the other way, then blend}
+\label{sec:v5}
+
+Code: \code{models/CRAFTV5.py}, plus small plumbing:
+\begin{itemize}[nosep]
+  \item \code{utils/utils.py}: \code{get\_dst\_neighbors} fetches $L$ recent
+        neighbours \emph{for every candidate}, using the \emph{same sampler and
+        strategy} as the source side, and also returns the ``last seen'' time
+        (other models still ask for just one neighbour, so nothing changes for
+        them).
+  \item \code{train\_link\_prediction.py} / \code{evaluate\_models\_utils.py}:
+        the extra tensors \code{src\_node\_ids}, \code{dst\_neighb\_seq},
+        \code{dst\_neighb\_interact\_times} are passed only for V5.
+  \item New table \code{src\_node\_embedding} (source--role ids), new attention
+        stack \code{rev\_cross\_attention}, new \code{gate\_layer}.
+\end{itemize}
+
+\paragraph{The one--sentence idea.}
+Plain CRAFT is one--directional: only the destination looks at the source's
+history. V5 also runs the mirror image --- the source looks at each candidate's
+history --- and blends the two answers with a gate.
+
+\paragraph{View 1 --- forward (this is just CRAFT).}
+\[
+  \bm{h}_{\text{fwd}} \;=\; \CA(\bm{Q},\ \bm{H})\ \in\ \R^{B\times N\times D}.
+\]
+``Does candidate $d$ match what source $u$ recently interacted with?''
+
+\paragraph{View 2 --- backward (new).}
+Let $\bm{r}\in\mathbb{Z}^{B\times N\times L}$ be each candidate's own recent
+neighbours and $\bm{u}\in\mathbb{Z}^{B}$ the source ids.
+
+\begin{enumerate}[label=\textbf{V5.\arabic*},leftmargin=3.6em]
+  \item \textbf{Embed each candidate's history} with the source--role table
+        $\Emb_{\mathrm{src}}$ (helper \code{encode\_neighbor\_seq}, same recipe as
+        CRAFT step \textbf{C1}):
+        \[
+          \bm{G} \;=\; \LN\big(\Emb_{\mathrm{src}}(\bm{r}) + \pos\big)
+          \ \in\ \R^{(B\cdot N)\times L\times D}.
+        \]
+
+  \item \textbf{Embed the source node itself} and copy it to every candidate:
+        \[
+          \bm{q}_{\text{src}} \;=\; \LN\big(\Emb_{\mathrm{src}}(\bm{u})\big)\ \in\ \R^{B\times 1\times D}
+          \ \longrightarrow\ \R^{(B\cdot N)\times 1\times D}.
+        \]
+
+  \item \textbf{Cross--attend the other way} (query $=$ the source,
+        keys/values $=$ the candidate's history):
+        \[
+          \bm{h}_{\text{bwd}} \;=\; \CA_{\text{rev}}(\bm{q}_{\text{src}},\ \bm{G})
+          \ \longrightarrow\ \R^{B\times N\times D}.
+        \]
+        ``Does source $u$ match the people candidate $d$ recently interacted with?''
+\end{enumerate}
+
+\paragraph{Blend the two views with a gate.}
+\begin{enumerate}[label=\textbf{V5.\arabic*},leftmargin=3.6em,start=4]
+  \item \textbf{Gate} --- one weight in $(0,1)$ per feature channel:
+        \[
+          \bm{g} \;=\; \sigma\!\big(W_g\,[\,\bm{h}_{\text{fwd}}\concat\bm{h}_{\text{bwd}}\,]\big)\ \in\ (0,1)^{B\times N\times D}.
+        \]
+
+  \item \textbf{Weighted average} of the forward and backward answers:
+        \[
+          \bm{O} \;=\; \bm{g}\elt\bm{h}_{\text{fwd}} \;+\; (\bm{1}-\bm{g})\elt\bm{h}_{\text{bwd}}.
+        \]
+\end{enumerate}
+Then steps \textbf{C4--C6} run unchanged.
+
+\paragraph{In plain words.}
+Ask two questions about the pair (source, candidate): CRAFT's usual one, and its
+mirror. Each is a full attention read. The gate then picks, per feature, which
+answer to trust more, and averages them. It is the same ``add a second opinion
+and gate it'' idea as V4, but the second opinion is a real attention read (not a
+pooled vector), and the mix is a weighted average (not an add--on top of CRAFT).
+
+\paragraph{Cost note.}
+View 2 builds $B\cdot N$ history sequences of length $L$ (one per candidate)
+instead of $B$, so V5 uses much more memory at evaluation time (many
+negatives). Lower the batch size if it runs out of memory.
+
+% ======================================================================
+\section{CRAFT\,V8 --- read evidence from outside the history window}
+\label{sec:v8}
+
+Code: \code{models/CRAFTV8.py}; the indexes are built by
+\code{build\_history\_memory}, \code{build\_covisit\_index} and
+\code{get\_edge\_directions} in \code{utils/utils.py}.
+
+\paragraph{The one--sentence idea.}
+CRAFT scores a candidate using only an \emph{undirected} window of the source's
+last $L$ interactions. V8 keeps all of CRAFT and adds three readouts of evidence
+that lies outside that window, then adds their verdict to CRAFT's score.
+
+\paragraph{Why each readout exists (measured on the data).}
+\begin{itemize}[nosep]
+  \item The neighbour sampler symmetrises the graph, so CRAFT cannot tell
+        ``$d$ wrote to me'' from ``I wrote to $d$''. On UCI, 60\% of edges answer an
+        earlier edge in the opposite direction.
+  \item The window truncates long histories: on LastFM, 22.5\% of test edges
+        go to an item the user played before, but outside the 120--slot window.
+  \item On unseen--dominant bipartite data the source never met the candidate.
+        On GoogleLocal, 58.8\% of positives but only 4.9\% of the official
+        negatives share a co--visit with the source's history.
+\end{itemize}
+
+\paragraph{How the evidence is read.}
+Every event is indexed once, sorted by (key, time). The number of events of a
+key strictly before the prediction time $t$, and the latest of them, are then
+two binary searches ($O(\log E)$ per query) on the GPU. No extra neighbours are
+sampled. Only events strictly before $t$ are counted. Training queries an index
+built from training edges only, and evaluation queries an index built from all
+edges, mirroring the train/full neighbour samplers.
+
+\paragraph{Readout R1 --- reciprocity (6 features).}
+For each history entry the code recovers whether the source sent or received
+it, from the edge id. For each direction $\delta\in\{\text{sent},\text{received}\}$
+and each candidate $d$:
+\[
+  \Big[\ \log\!\big(1+\tfrac{t-t^{\delta}_{\text{last}}(d)}{\kappa}\big),\quad
+  \mathbb{1}[\text{exists}],\quad
+  \log\!\big(1+n^{\delta}(d)\big)\ \Big],
+\]
+where $n^{\delta}(d)$ counts window entries with $d$ in direction $\delta$, and
+$\kappa$ is a running median of elapsed times (the dataset's time unit).
+On bipartite data the ``received'' half is always zero.
+
+\paragraph{Readout R2 --- long--range memory (12 features).}
+Over the source's \emph{entire} past, not just the window, with windows
+$w_k\in\kappa\cdot\{0.1,1,10,100\}$:
+\begin{itemize}[nosep]
+  \item pair $(s,d)$: $\log(1+\#\text{events in }[t-w_k,t))$ for each $k$,
+        $\log(1+\#\text{all time})$, $\mathbb{1}[\text{ever}]$, and
+        $\log(1+(t-t_{\text{last}})/\kappa)$;
+  \item candidate $d$ with anyone: $\log(1+\#\text{events in }[t-w_k,t))$ for each
+        $k$, and the all--time count (popularity momentum).
+\end{itemize}
+
+\paragraph{Readout R3 --- co--visit closure (11 features).}
+A co--visit $(i,d)$ is one user interacting with both $i$ and $d$ within $W$
+interactions of each other, stamped with the time of the later one. $W=20$,
+capped so that the index holds at most $10^8$ co--visits; the cap gives $W\approx6$--$7$
+on Yelp, Taobao and ML--20M. For each history item $i_\ell$:
+\[
+  c_\ell = \#\text{co--visits}(i_\ell,d)\text{ before }t,
+  \qquad
+  \cos_\ell = \frac{c_\ell}{\sqrt{(1+\mathrm{pop}(i_\ell))(1+\mathrm{pop}(d))}},
+\]
+giving the sum and maximum of $c_\ell$, the share of history items with
+$c_\ell>0$, the sum and maximum of $\cos_\ell$, and the sums of $c_\ell$ and
+$\cos_\ell$ weighted by $e^{-(t-t_\ell)/(\kappa\tau_k)}$ for three learned
+$\tau_k$. This closes the 4--cycle $s - i_\ell - u - d$: ``people who used what I
+used went on to use $d$''.
+
+\paragraph{Combining with CRAFT.}
+The $6+12+11=29$ features $\bm{f}_d$ go through a 2--layer MLP, and the result is
+added to CRAFT's score behind a gate $g$ initialised to $0$:
+\[
+  \hat{y}_d \;=\; \underbrace{\mathrm{MLP}_{\text{out}}(\bm{O}_d\concat\bm{\tau}_d\concat\cdots)}_{\text{CRAFT, unchanged}}
+  \;+\; g\cdot \mathrm{MLP}_{\text{readout}}(\bm{f}_d).
+\]
+At initialisation V8 therefore computes exactly CRAFT's score. Each readout can be
+ablated (\code{--no\_reciprocity}, \code{--no\_history\_memory},
+\code{--no\_covisit}); with all three off, V8 is CRAFT.
+
+\paragraph{In plain words.}
+CRAFT asks ``does this candidate fit what the source did lately?''. V8 also asks:
+``did the candidate contact the source and wait for an answer?'' (R1), ``has
+the source used this candidate before, beyond what the window shows?'' (R2), and
+``did other people who used the same things go on to use this candidate?'' (R3).
+Each question answers itself with zeros where it has nothing to say, so the
+readout MLP learns which question matters on which dataset.
+
+\paragraph{Cost note.}
+The training data, loss, negatives and per--dataset hyper--parameters are
+CRAFT's. Overhead measured on CPU is about $+3$--$10\%$ per training step. The
+indexes are built once per run (seconds on GoogleLocal, minutes on the largest
+datasets), and the co--visit index lives on the GPU when it fits under
+\code{--covisit\_gpu\_max\_gb}.
+
+% ======================================================================
+\section{Results}
+
+Scores are the test link--prediction metric in percent (MRR$\times 100$ for
+GoogleLocal, MOOC, LastFM, YouTube and UCI; the configured validation metric
+for Wikipedia). ``$\pm$'' is the sample standard deviation across seeds.
+V5 has not been evaluated yet. V8 was evaluated without MRR validation, on
+eight datasets (Section~\ref{sec:v8-results}). The full tables, split by which validation
+metric was used during model selection --- \emph{with MRR validation} (early
+stopping / checkpoint selection driven by validation MRR) versus \emph{without
+MRR validation} (a different validation criterion) --- are collected together
+in Section~\ref{sec:results-tables} at the end of this note.
+
+\section{Reading of the results}
+
+\begin{itemize}[nosep]
+  \item \textbf{V8 is ahead of CRAFT on all eight datasets measured.} The largest
+        gains are on the directed, non--bipartite graphs, where reciprocity has
+        signal: Flickr $+10.64$, YouTube $+6.60$, UCI $+2.58$. Next come the
+        repeat--heavy and unseen--dominant bipartite sets, where long--range
+        memory and co--visits apply: Wikipedia $+1.46$, LastFM $+1.27$,
+        GoogleLocal $+1.15$. The gain is small on Reddit ($+0.40$) and within
+        noise on MOOC ($+0.18$, with V8's seed spread $\pm1.37$). V8 also beats V4
+        wherever both were run without MRR validation: GoogleLocal, LastFM,
+        YouTube, UCI and MOOC. Two caveats: the CRAFT numbers for Reddit and
+        Flickr are single runs, and GoogleLocal V8 has two seeds.
+  \item \textbf{V4 wins on both datasets under MRR validation.} Wikipedia $+0.35$, GoogleLocal
+        $+0.54$ over CRAFT, and the \emph{smallest} spread across seeds on both.
+        The ``add on top of CRAFT'' design (step V4.7) lets the gate fall back to
+        plain CRAFT, so the extra path is low--risk. On MOOC (also MRR--validated)
+        V4 is ahead on mean ($+0.81$) but with much higher seed variance ($\pm1.83$
+        vs.\ $\pm0.88$), driven by one low seed (59.91).
+  \item \textbf{V3 helps only on Wikipedia.} $+0.23$ there, but $-1.13$ on
+        GoogleLocal, and the noisiest Wikipedia result ($\pm0.21$). The shared
+        ``one profile for all candidates'' step (V3.2) assumes a few history
+        items dominate for everyone; GoogleLocal's bigger, sparser graph breaks
+        that assumption, so forcing every candidate through the same lens throws
+        away useful signal.
+  \item \textbf{Without MRR validation the picture flips on MOOC.} CRAFT edges
+        out V4 there ($61.91$ vs.\ $60.77$), the opposite ranking from the
+        MRR--validated MOOC table. On GoogleLocal, LastFM, YouTube and UCI, V4
+        stays ahead of CRAFT by small margins ($+0.39$, $+0.12$, $+0.95$, $+0.41$
+        respectively) with overlapping or comparable standard deviations, so
+        those gaps are modest rather than decisive.
+  \item \textbf{What to expect from V5.} It follows V4's winning recipe (second
+        signal $+$ gate) but the second signal is a full mirror--direction
+        attention read instead of a pooled vector. If the gate behaves it should
+        match or beat V4; the risk is that the weighted average (step V5.5) has
+        no exact ``fall back to CRAFT'' setting unless the gate $\bm{g}$ goes all
+        the way to $\bm{1}$.
+\end{itemize}
+
+\clearpage
+% ======================================================================
+\section{Results tables}
+\label{sec:results-tables}
+
+All measured results are collected here, grouped by whether the model was
+selected using MRR as the validation metric.
+
+\subsection{With MRR validation}
+
+\begin{table}[H]
+\centering
+\caption{Wikipedia --- 3 seed runs.}
+\begin{tabular}{lc}
+\toprule
+Model & Score (\%) \\
+\midrule
+CRAFT      & $88.49 \pm 0.13$ \\
+CRAFT\,V3  & $88.72 \pm 0.21$ \\
+CRAFT\,V4  & $\mathbf{88.84 \pm 0.05}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{GoogleLocal --- per--seed scores and summary (V3: 2 seeds, others: 3 seeds).}
+\begin{tabular}{lcc}
+\toprule
+Model & Per--seed scores (\%) & Mean $\pm$ sd (\%) \\
+\midrule
+CRAFT      & $63.39,\ 62.98,\ 62.88$ & $63.08 \pm 0.27$ \\
+CRAFT\,V3  & $61.96,\ 61.93$          & $61.95 \pm 0.02$ \\
+CRAFT\,V4  & $63.67,\ 63.80,\ 63.38$  & $\mathbf{63.62 \pm 0.22}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{MOOC --- per--seed scores and summary (3 seeds).}
+\begin{tabular}{lcc}
+\toprule
+Model & Per--seed scores (\%) & Mean $\pm$ sd (\%) \\
+\midrule
+CRAFT      & $62.23,\ 60.86,\ 60.58$ & $61.22 \pm 0.88$ \\
+CRAFT\,V4  & $63.07,\ 63.10,\ 59.91$ & $\mathbf{62.03 \pm 1.83}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+
+\subsection{Without MRR validation}
+
+\begin{table}[H]
+\centering
+\caption{MOOC --- per--seed scores and summary (3 seeds).}
+\begin{tabular}{lcc}
+\toprule
+Model & Per--seed scores (\%) & Mean $\pm$ sd (\%) \\
+\midrule
+CRAFT      & $62.21,\ 61.92,\ 61.59$ & $\mathbf{61.91 \pm 0.31}$ \\
+CRAFT\,V4  & $60.21,\ 61.40,\ 60.69$ & $60.77 \pm 0.60$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{GoogleLocal --- per--seed scores and summary (3 seeds).}
+\begin{tabular}{lcc}
+\toprule
+Model & Per--seed scores (\%) & Mean $\pm$ sd (\%) \\
+\midrule
+CRAFT      & $62.25,\ 62.10,\ 62.23$ & $62.19 \pm 0.08$ \\
+CRAFT\,V4  & $62.21,\ 62.62,\ 62.92$ & $\mathbf{62.58 \pm 0.36}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{LastFM --- per--seed scores and summary (3 seeds).}
+\begin{tabular}{lcc}
+\toprule
+Model & Per--seed scores (\%) & Mean $\pm$ sd (\%) \\
+\midrule
+CRAFT      & $55.26,\ 55.14,\ 55.22$ & $55.21 \pm 0.06$ \\
+CRAFT\,V4  & $55.25,\ 55.44,\ 55.31$ & $\mathbf{55.33 \pm 0.10}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{YouTube --- per--seed scores and summary (3 seeds).}
+\begin{tabular}{lcc}
+\toprule
+Model & Per--seed scores (\%) & Mean $\pm$ sd (\%) \\
+\midrule
+CRAFT      & $58.36,\ 58.91,\ 59.32$ & $58.86 \pm 0.48$ \\
+CRAFT\,V4  & $59.68,\ 59.69,\ 60.05$ & $\mathbf{59.81 \pm 0.21}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{UCI --- per--seed scores and summary (3 seeds).}
+\begin{tabular}{lcc}
+\toprule
+Model & Per--seed scores (\%) & Mean $\pm$ sd (\%) \\
+\midrule
+CRAFT      & $75.39,\ 74.49,\ 75.08$ & $74.99 \pm 0.46$ \\
+CRAFT\,V4  & $75.83,\ 75.41,\ 74.96$ & $\mathbf{75.40 \pm 0.44}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+
+\subsection{CRAFT\,V8 (without MRR validation)}
+\label{sec:v8-results}
+
+\begin{table}[H]
+\centering
+\caption{CRAFT\,V8 --- per--seed scores where available, and summary.}
+\begin{tabular}{lcc}
+\toprule
+Dataset & Per--seed scores (\%) & Mean $\pm$ sd (\%) \\
+\midrule
+Wikipedia   & ---                       & $89.63 \pm 0.18$ \\
+LastFM      & $56.59,\ 57.00,\ 55.86$   & $56.48 \pm 0.58$ \\
+YouTube     & $64.74,\ 65.47,\ 66.18$   & $65.46 \pm 0.72$ \\
+Flickr      & $72.47,\ 73.36,\ 73.12$   & $72.98 \pm 0.46$ \\
+UCI         & ---                       & $77.57 \pm 0.53$ \\
+Reddit      & ---                       & $89.73 \pm 0.07$ \\
+MOOC        & ---                       & $62.09 \pm 1.37$ \\
+GoogleLocal & $63.19,\ 63.49$           & $63.34 \pm 0.21$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{CRAFT\,V8 against CRAFT and CRAFT\,V4, all without MRR validation --- mean $\pm$ sd (\%),
+best per row in \textbf{bold}. CRAFT on Reddit and Flickr is a single run. CRAFT on
+Wikipedia is the CRAFT control of the MYMODEL ablation in this codebase (3 seeds, same protocol).}
+\begin{tabular}{lcccc}
+\toprule
+Dataset & CRAFT & CRAFT\,V4 & CRAFT\,V8 & V8 $-$ CRAFT \\
+\midrule
+Wikipedia   & $88.17 \pm 0.17$ & ---              & $\mathbf{89.63 \pm 0.18}$ & $+1.46$ \\
+LastFM      & $55.21 \pm 0.06$ & $55.33 \pm 0.10$ & $\mathbf{56.48 \pm 0.58}$ & $+1.27$ \\
+YouTube     & $58.86 \pm 0.48$ & $59.81 \pm 0.21$ & $\mathbf{65.46 \pm 0.72}$ & $+6.60$ \\
+Flickr      & $62.34$          & ---              & $\mathbf{72.98 \pm 0.46}$ & $+10.64$ \\
+UCI         & $74.99 \pm 0.46$ & $75.40 \pm 0.44$ & $\mathbf{77.57 \pm 0.53}$ & $+2.58$ \\
+Reddit      & $89.33$          & ---              & $\mathbf{89.73 \pm 0.07}$ & $+0.40$ \\
+MOOC        & $61.91 \pm 0.31$ & $60.77 \pm 0.60$ & $\mathbf{62.09 \pm 1.37}$ & $+0.18$ \\
+GoogleLocal & $62.19 \pm 0.08$ & $62.58 \pm 0.36$ & $\mathbf{63.34 \pm 0.21}$ & $+1.15$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+
+\subsection{Aggregate summary}
+
+\begin{table}[H]
+\centering
+\caption{Aggregate summary across all datasets --- mean $\pm$ sd (\%), best mean per row in \textbf{bold}.}
+\begin{tabular}{llccc}
+\toprule
+Dataset & Validation & CRAFT & CRAFT\,V3 & CRAFT\,V4 \\
+\midrule
+Wikipedia   & MRR    & $88.49 \pm 0.13$ & $88.72 \pm 0.21$ & $\mathbf{88.84 \pm 0.05}$ \\
+GoogleLocal & MRR    & $63.08 \pm 0.27$ & $61.95 \pm 0.02$ & $\mathbf{63.62 \pm 0.22}$ \\
+MOOC        & MRR    & $61.22 \pm 0.88$ & ---              & $\mathbf{62.03 \pm 1.83}$ \\
+MOOC        & no MRR & $\mathbf{61.91 \pm 0.31}$ & ---     & $60.77 \pm 0.60$ \\
+GoogleLocal & no MRR & $62.19 \pm 0.08$ & ---              & $\mathbf{62.58 \pm 0.36}$ \\
+LastFM      & no MRR & $55.21 \pm 0.06$ & ---              & $\mathbf{55.33 \pm 0.10}$ \\
+YouTube     & no MRR & $58.86 \pm 0.48$ & ---              & $\mathbf{59.81 \pm 0.21}$ \\
+UCI         & no MRR & $74.99 \pm 0.46$ & ---              & $\mathbf{75.40 \pm 0.44}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+
+\end{document}

@@ -443,10 +443,14 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
                                                 full_memory=build_history_memory(full_data, num_ids=num_ids),
                                                 num_ids=num_ids)
         if not args.no_covisit:
-            dynamic_backbone.set_covisit_index(
-                train_index=build_covisit_index(train_data, num_ids=num_ids, window=args.covisit_window, max_pairs=args.covisit_max_pairs),
-                full_index=build_covisit_index(full_data, num_ids=num_ids, window=args.covisit_window, max_pairs=args.covisit_max_pairs),
-                num_ids=num_ids, max_device_gb=args.covisit_gpu_max_gb)
+            # the window is chosen once, on all edges, and reused for the training index, so that training and
+            # evaluation count co-visits within the same number of interactions
+            full_covisit_index, covisit_window = build_covisit_index(full_data, num_ids=num_ids, window=args.covisit_window,
+                                                                     max_pairs=args.covisit_max_pairs)
+            train_covisit_index, _ = build_covisit_index(train_data, num_ids=num_ids, window=covisit_window,
+                                                         max_pairs=np.iinfo(np.int64).max)
+            dynamic_backbone.set_covisit_index(train_index=train_covisit_index, full_index=full_covisit_index,
+                                               num_ids=num_ids, max_device_gb=args.covisit_gpu_max_gb)
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")
     if args.merge in ['cat']:

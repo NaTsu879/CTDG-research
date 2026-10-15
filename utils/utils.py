@@ -628,7 +628,8 @@ def build_covisit_index(data: Data, num_ids: int, window: int = 20, max_pairs: i
     :param window: int, how many interactions apart two visits of one source may be to count as a co-visit
     :param max_pairs: int, cap on the number of indexed co-visits; the window stops growing before it is exceeded,
     so dense datasets (ML-20M) get a shorter window and the index fits in host memory
-    :return: dict with the pair index and the node index, as returned by build_event_index
+    :return: dict with the pair index and the node index, as returned by build_event_index, and the window used; build
+    the evaluation index first and pass its window to the training index, so both count co-visits the same way
     """
     order = np.lexsort((data.node_interact_times, data.src_node_ids))
     srcs, dsts, times = data.src_node_ids[order], data.dst_node_ids[order], data.node_interact_times[order]
@@ -649,7 +650,7 @@ def build_covisit_index(data: Data, num_ids: int, window: int = 20, max_pairs: i
     pair_times = np.concatenate(pair_times) if pair_times else np.zeros(0, dtype=np.float64)
     node_keys = np.concatenate([data.src_node_ids, data.dst_node_ids])
     node_times = np.concatenate([data.node_interact_times, data.node_interact_times])
-    return {'pair': build_event_index(pair_keys, pair_times), 'node': build_event_index(node_keys, node_times)}
+    return {'pair': build_event_index(pair_keys, pair_times), 'node': build_event_index(node_keys, node_times)}, used_window
 
 
 class NeighborSamplerWindow(NeighborSampler):

@@ -1,0 +1,277 @@
+\begin{thebibliography}{}
+
+\bibitem[Abboud et~al., 2020]{abboud2020surprising}
+Abboud, R., Ceylan, I.~I., Grohe, M., and Lukasiewicz, T. (2020).
+\newblock The surprising power of graph neural networks with random node
+  initialization.
+\newblock {\em arXiv preprint arXiv:2010.01179}.
+
+\bibitem[Bechler-Speicher et~al., 2025]{bechler2025towards}
+Bechler-Speicher, M., Eliasof, M., Schonlieb, C.-B., Gilad-Bachrach, R., and
+  Globerson, A. (2025).
+\newblock Towards invariance to node identifiers in graph neural networks.
+\newblock {\em arXiv preprint arXiv:2502.13660}.
+
+\bibitem[Besta et~al., 2024]{besta2024hot}
+Besta, M., Catarino, A.~C., Gianinazzi, L., Blach, N., Nyczyk, P.,
+  Niewiadomski, H., and Hoefler, T. (2024).
+\newblock {HOT}: Higher-order dynamic graph representation learning with
+  efficient transformers.
+\newblock In {\em Learning on Graphs Conference}, pages 15--1. PMLR.
+
+\bibitem[Blundell et~al., 2012]{blundell2012modelling}
+Blundell, C., Beck, J., and Heller, K.~A. (2012).
+\newblock Modelling reciprocating relationships with {H}awkes processes.
+\newblock In {\em Advances in Neural Information Processing Systems 25}.
+
+\bibitem[Cho et~al., 2014]{cho2014learning}
+Cho, K., Van~Merri{\"e}nboer, B., Gulcehre, C., Bahdanau, D., Bougares, F.,
+  Schwenk, H., and Bengio, Y. (2014).
+\newblock Learning phrase representations using {RNN} encoder-decoder for
+  statistical machine translation.
+\newblock {\em arXiv preprint arXiv:1406.1078}.
+
+\bibitem[Cong et~al., 2023]{cong2023graphmixer}
+Cong, W., Zhang, S., Kang, J., Yuan, B., Wu, H., Zhou, X., Tong, H., and
+  Mahdavi, M. (2023).
+\newblock Do we really need complicated model architectures for temporal
+  networks?
+\newblock In {\em The Eleventh International Conference on Learning
+  Representations, {ICLR} 2023}.
+
+\bibitem[Daud et~al., 2020]{daud2020applications}
+Daud, N.~N., Ab~Hamid, S.~H., Saadoon, M., Sahran, F., and Anuar, N.~B. (2020).
+\newblock Applications of link prediction in social networks: A review.
+\newblock {\em Journal of Network and Computer Applications}, 166:102716.
+
+\bibitem[Divakaran and Mohan, 2020]{divakaran2020temporal}
+Divakaran, A. and Mohan, A. (2020).
+\newblock Temporal link prediction: A survey.
+\newblock {\em New Generation Computing}, 38(1):213--258.
+
+\bibitem[Fard, 2023]{fard2023machine}
+Fard, S.~H. (2023).
+\newblock Machine learning on dynamic graphs: a survey on applications.
+\newblock In {\em 2023 IEEE Ninth Multimedia Big Data (BigMM)}, pages 32--39.
+
+\bibitem[Haghani and Keyvanpour, 2019]{haghani2019systemic}
+Haghani, S. and Keyvanpour, M.~R. (2019).
+\newblock A systemic analysis of link prediction in social network.
+\newblock {\em Artificial Intelligence Review}, 52:1961--1995.
+
+\bibitem[Hawkes, 1971]{hawkes1971spectra}
+Hawkes, A.~G. (1971).
+\newblock Spectra of some self-exciting and mutually exciting point processes.
+\newblock {\em Biometrika}, 58:83--90.
+
+\bibitem[Huang et~al., 2024]{huang2024tgb}
+Huang, S., Poursafaei, F., Danovitch, J., Fey, M., Hu, W., Rossi, E., Leskovec,
+  J., Bronstein, M., Rabusseau, G., and Rabbany, R. (2024).
+\newblock Temporal graph benchmark for machine learning on temporal graphs.
+\newblock {\em Advances in Neural Information Processing Systems}, 36.
+
+\bibitem[Kang and McAuley, 2018]{kang2018sasrec}
+Kang, W.-C. and McAuley, J. (2018).
+\newblock Self-attentive sequential recommendation.
+\newblock In {\em 2018 IEEE International Conference on Data Mining (ICDM)},
+  pages 197--206. IEEE.
+
+\bibitem[Kazemi et~al., 2020]{kazemi2020representation}
+Kazemi, S.~M., Goel, R., Jain, K., Kobyzev, I., Sethi, A., Forsyth, P., and
+  Poupart, P. (2020).
+\newblock Representation learning for dynamic graphs: A survey.
+\newblock {\em Journal of Machine Learning Research}, 21(70):1--73.
+
+\bibitem[Knyazev et~al., 2021]{knyazev2021learning}
+Knyazev, B., Augusta, C., and Taylor, G.~W. (2021).
+\newblock Learning temporal attention in dynamic graphs with bilinear
+  interactions.
+\newblock {\em PLoS ONE}, 16(3):e0247936.
+
+\bibitem[Kumar et~al., 2019]{kumar2019jodie}
+Kumar, S., Zhang, X., and Leskovec, J. (2019).
+\newblock Predicting dynamic embedding trajectory in temporal interaction
+  networks.
+\newblock In {\em Proceedings of the 25th ACM SIGKDD International Conference
+  on Knowledge Discovery \& Data Mining}, pages 1269--1278.
+
+\bibitem[Loukas, 2019]{loukas2019graph}
+Loukas, A. (2019).
+\newblock What graph neural networks cannot learn: depth vs width.
+\newblock {\em arXiv preprint arXiv:1907.03199}.
+
+\bibitem[Lu et~al., 2024]{lu2024tpnet}
+Lu, X., Sun, L., Zhu, T., and Lv, W. (2024).
+\newblock Improving temporal link prediction via temporal walk matrix
+  projection.
+\newblock In {\em Advances in Neural Information Processing Systems 37}.
+
+\bibitem[Luo and Li, 2022]{luo2022neighborhood}
+Luo, Y. and Li, P. (2022).
+\newblock Neighborhood-aware scalable temporal network representation learning.
+\newblock In {\em Learning on Graphs Conference}, pages 1--1. PMLR.
+
+\bibitem[Mei and Eisner, 2017]{mei2017neural}
+Mei, H. and Eisner, J.~M. (2017).
+\newblock The neural {H}awkes process: A neurally self-modulating multivariate
+  point process.
+\newblock {\em Advances in Neural Information Processing Systems}, 30.
+
+\bibitem[Pan et~al., 2020]{pan2020sgnnhn}
+Pan, Z., Cai, F., Chen, W., Chen, H., and de~Rijke, M. (2020).
+\newblock Star graph neural networks for session-based recommendation.
+\newblock In {\em Proceedings of the 29th ACM International Conference on
+  Information \& Knowledge Management}.
+
+\bibitem[Panzarasa et~al., 2009]{panzarasa2009patterns}
+Panzarasa, P., Opsahl, T., and Carley, K.~M. (2009).
+\newblock Patterns and dynamics of users' behavior and interaction: Network
+  analysis of an online community.
+\newblock {\em Journal of the American Society for Information Science and
+  Technology}, 60(5):911--932.
+
+\bibitem[Poursafaei et~al., 2022]{poursafaei2022towards}
+Poursafaei, F., Huang, S., Pelrine, K., and Rabbany, R. (2022).
+\newblock Towards better evaluation for dynamic link prediction.
+\newblock {\em Advances in Neural Information Processing Systems},
+  35:32928--32941.
+
+\bibitem[Rajput and Singh, 2022]{rajput2022temporal}
+Rajput, N. and Singh, K. (2022).
+\newblock Temporal graph learning for financial world: Algorithms, scalability,
+  explainability \& fairness.
+\newblock In {\em Proceedings of the 28th ACM SIGKDD Conference on Knowledge
+  Discovery and Data Mining}, pages 4818--4819.
+
+\bibitem[Rendle et~al., 2012]{rendle2012bpr}
+Rendle, S., Freudenthaler, C., Gantner, Z., and Schmidt-Thieme, L. (2012).
+\newblock {BPR}: Bayesian personalized ranking from implicit feedback.
+\newblock {\em arXiv preprint arXiv:1205.2618}.
+
+\bibitem[Rossi et~al., 2020]{rossi2020tgn}
+Rossi, E., Chamberlain, B., Frasca, F., Eynard, D., Monti, F., and Bronstein,
+  M. (2020).
+\newblock Temporal graph networks for deep learning on dynamic graphs.
+\newblock In {\em ICML 2020 Workshop on Graph Representation Learning}.
+
+\bibitem[Sarwar et~al., 2001]{sarwar2001item}
+Sarwar, B., Karypis, G., Konstan, J., and Riedl, J. (2001).
+\newblock Item-based collaborative filtering recommendation algorithms.
+\newblock In {\em Proceedings of the 10th International Conference on World
+  Wide Web}, pages 285--295.
+
+\bibitem[Skarding et~al., 2021]{skarding2021foundations}
+Skarding, J., Gabrys, B., and Musial, K. (2021).
+\newblock Foundations and modeling of dynamic networks using dynamic graph
+  neural networks: A survey.
+\newblock {\em IEEE Access}, 9:79143--79168.
+
+\bibitem[Sun et~al., 2011]{sun2011coauthor}
+Sun, Y., Barber, R., Gupta, M., Aggarwal, C.~C., and Han, J. (2011).
+\newblock Co-author relationship prediction in heterogeneous bibliographic
+  networks.
+\newblock In {\em 2011 International Conference on Advances in Social Networks
+  Analysis and Mining}, pages 121--128. IEEE.
+
+\bibitem[Tian et~al., 2024]{tian2024freedyg}
+Tian, Y., Qi, Y., and Guo, F. (2024).
+\newblock {FreeDyG}: Frequency enhanced continuous-time dynamic graph model for
+  link prediction.
+\newblock In {\em The Twelfth International Conference on Learning
+  Representations}.
+
+\bibitem[Tolstikhin et~al., 2021]{tolstikhin2021mlp}
+Tolstikhin, I.~O., Houlsby, N., Kolesnikov, A., Beyer, L., Zhai, X.,
+  Unterthiner, T., Yung, J., Steiner, A., Keysers, D., Uszkoreit, J., et~al.
+  (2021).
+\newblock {MLP-Mixer}: An all-{MLP} architecture for vision.
+\newblock {\em Advances in Neural Information Processing Systems},
+  34:24261--24272.
+
+\bibitem[Trivedi et~al., 2019]{trivedi2019dyrep}
+Trivedi, R., Farajtabar, M., Biswal, P., and Zha, H. (2019).
+\newblock {DyRep}: Learning representations over dynamic graphs.
+\newblock In {\em 7th International Conference on Learning Representations,
+  {ICLR} 2019}.
+
+\bibitem[Vaswani et~al., 2017]{vaswani2017attention}
+Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.~N.,
+  Kaiser, {\L}., and Polosukhin, I. (2017).
+\newblock Attention is all you need.
+\newblock {\em Advances in Neural Information Processing Systems}.
+
+\bibitem[Wang et~al., 2021a]{wang2021tcl}
+Wang, L., Chang, X., Li, S., Chu, Y., Li, H., Zhang, W., He, X., Song, L.,
+  Zhou, J., and Yang, H. (2021a).
+\newblock {TCL}: Transformer-based dynamic graph modelling via contrastive
+  learning.
+\newblock {\em arXiv preprint arXiv:2105.07944}.
+
+\bibitem[Wang et~al., 2021b]{wang2021cawn}
+Wang, Y., Chang, Y.-Y., Liu, Y., Leskovec, J., and Li, P. (2021b).
+\newblock Inductive representation learning in temporal networks via causal
+  anonymous walks.
+\newblock In {\em 9th International Conference on Learning Representations,
+  {ICLR} 2021}.
+
+\bibitem[Wen and Fang, 2022]{wen2022trend}
+Wen, Z. and Fang, Y. (2022).
+\newblock {TREND}: Temporal event and node dynamics for graph representation
+  learning.
+\newblock In {\em Proceedings of the ACM Web Conference 2022}, pages
+  1159--1169.
+
+\bibitem[Wu et~al., 2017]{wu2017recurrent}
+Wu, C.-Y., Ahmed, A., Beutel, A., Smola, A.~J., and Jing, H. (2017).
+\newblock Recurrent recommender networks.
+\newblock In {\em Proceedings of the Tenth ACM International Conference on Web
+  Search and Data Mining}, pages 495--503.
+
+\bibitem[Wu et~al., 2024]{wu2024simpledyg}
+Wu, Y., Fang, Y., and Liao, L. (2024).
+\newblock On the feasibility of simple transformer for dynamic graph modeling.
+\newblock In {\em Proceedings of the ACM on Web Conference 2024}, pages
+  870--880.
+
+\bibitem[Xu et~al., 2020]{xu2020tgat}
+Xu, D., Ruan, C., K{\"o}rpeoglu, E., Kumar, S., and Achan, K. (2020).
+\newblock Inductive representation learning on temporal graphs.
+\newblock In {\em 8th International Conference on Learning Representations,
+  {ICLR} 2020}.
+
+\bibitem[Yang et~al., 2024]{yang2024towards}
+Yang, Y., Zhou, H., Kannan, R., and Prasanna, V. (2024).
+\newblock Towards ideal temporal graph neural networks: Evaluations and
+  conclusions after 10,000 {GPU} hours.
+\newblock {\em arXiv preprint arXiv:2412.20256}.
+
+\bibitem[Yi et~al., 2025a]{yi2025craft}
+Yi, L., Lei, R., Mo, F., Zheng, Y., Wei, Z., and Ye, Y. (2025a).
+\newblock Future link prediction without memory or aggregation.
+\newblock In {\em Advances in Neural Information Processing Systems 38}.
+
+\bibitem[Yi et~al., 2025b]{yi2025tgbseq}
+Yi, L., Peng, J., Zheng, Y., Mo, F., Wei, Z., Ye, Y., Zixuan, Y., and Huang, Z.
+  (2025b).
+\newblock {TGB-Seq} benchmark: Challenging temporal {GNNs} with complex
+  sequential dynamics.
+\newblock In {\em The Thirteenth International Conference on Learning
+  Representations}.
+
+\bibitem[Yu et~al., 2023]{yu2023dygformer}
+Yu, L., Sun, L., Du, B., and Lv, W. (2023).
+\newblock Towards better dynamic graph learning: New architecture and unified
+  library.
+\newblock In {\em Advances in Neural Information Processing Systems 36}.
+
+\bibitem[Zhang et~al., 2024]{zhang2024tncn}
+Zhang, X., Wang, Y., Wang, X., and Zhang, M. (2024).
+\newblock Efficient neural common neighbor for temporal graph link prediction.
+\newblock {\em arXiv preprint arXiv:2406.07926}.
+
+\bibitem[Zheng et~al., 2024]{zheng2024survey}
+Zheng, Y., Yi, L., and Wei, Z. (2024).
+\newblock A survey of dynamic graph neural networks.
+\newblock {\em arXiv preprint arXiv:2404.18211}.
+
+\end{thebibliography}
