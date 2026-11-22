@@ -97,7 +97,7 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--no_covisit', action='store_true', default=False, help='ablate the co-visit closure readout in CRAFTV8; with --no_reciprocity and --no_history_memory too, CRAFTV8 is identical to CRAFT')
     parser.add_argument('--covisit_window', type=int, default=20, help='largest number of interactions apart two visits of one source may be to count as a co-visit in CRAFTV8')
     parser.add_argument('--covisit_max_pairs', type=int, default=100000000, help='cap on the co-visits indexed by CRAFTV8; the window stops growing before it is exceeded, so the index fits in host memory')
-    parser.add_argument('--scalar_encoding', type=str, default='projected', choices=['projected', 'multiscale'], help="how CRAFTV8 encodes the candidate's elapsed time and repeat count: CRAFT's LayerNorm(Linear(x)), which collapses their magnitude, or a multiscale log expansion that keeps it")
+    parser.add_argument('--scalar_encoding', type=str, default='multiscale', choices=['projected', 'multiscale'], help="how CRAFTV10 encodes the candidate's elapsed time and repeat count: 'multiscale' keeps their magnitude, 'projected' is CRAFT's LayerNorm(Linear(x)), which collapses it (the control)")
     parser.add_argument('--covisit_gpu_max_gb', type=float, default=4.0, help='largest size of the CRAFTV8 co-visit indexes (both splits) that is kept on the GPU; larger ones are queried on the CPU, which is much slower')
     try:
         args = parser.parse_args()
@@ -282,7 +282,8 @@ def load_link_prediction_best_configs(args: argparse.Namespace):
     elif args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3',
                              'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5',
                              'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7',
-                             'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9']:
+                             'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9',
+                             'CRAFTV10', 'CRAFTv10', 'craftv10']:
         # the per-dataset budget reported for CRAFT, shared by every CRAFT-family model so that they are all
         # trained under the same settings:
         # (num_neighbors, hidden_dropout, attn_dropout_prob, emb_dropout_prob, num_layers, batch_size, embedding_size)

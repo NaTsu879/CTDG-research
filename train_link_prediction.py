@@ -23,6 +23,7 @@ from models.MYMODEL import MYMODEL
 from models.CRAFTV7 import CRAFTV7
 from models.CRAFTV8 import CRAFTV8
 from models.CRAFTV9 import CRAFTV9
+from models.CRAFTV10 import CRAFTV10
 from models.modules import MergeLayer, MulMergeLayer, BPRLoss
 from utils.utils import set_random_seed, convert_to_gpu, get_parameter_sizes, create_optimizer
 from utils.utils import get_neighbor_sampler, get_dst_neighbors, get_edge_directions, build_history_memory, build_covisit_index, NegativeEdgeSampler
@@ -36,7 +37,7 @@ from models.SASRec import SASRec
 from models.SGNNHN import SGNNHN
 def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbor_sampler, train_neg_edge_sampler, train_data, optimizer, loss_func, full_neighbor_sampler, val_data, val_idx_data_loader, val_neg_edge_sampler, full_data):
         model.train()
-        if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9']:
+        if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10']:
             model[0].set_neighbor_sampler(train_neighbor_sampler)
         
         if args.model_name in ['JODIE', 'DyRep', 'TGN']:
@@ -125,7 +126,7 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                 batch_dst_node_embeddings = dst_node_embeddings[:len(pos_item)]
                 batch_neg_dst_node_embeddings = dst_node_embeddings[len(pos_item):]
                 batch_neg_src_node_embeddings = batch_src_node_embeddings
-            elif args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9']:
+            elif args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10']:
                 src_neighb_seq, src_neighb_edge_ids, src_neighb_interact_times = train_neighbor_sampler.get_historical_neighbors_left(node_ids=batch_src_node_ids, node_interact_times=batch_node_interact_times, num_neighbors=args.num_neighbors)
                 neighbor_num=(src_neighb_seq!=0).sum(axis=1)
                 if neighbor_num.sum() == 0:
@@ -136,7 +137,7 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                 # CRAFTV5 attends to the historical neighbors of each candidate destination
                 is_craftv5 = args.model_name in ['CRAFTV5', 'CRAFTv5', 'craftv5']
                 is_mymodel = args.model_name in ['MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7']
-                is_craftv8 = args.model_name in ['CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9']
+                is_craftv8 = args.model_name in ['CRAFTV8', 'CRAFTv8', 'craftv8']
                 num_dst_neighbors = args.num_neighbors if is_craftv5 else 1
                 dst_neighb_seq, dst_neighb_interact_times, dst_last_update_time = get_dst_neighbors(neighbor_sampler=train_neighbor_sampler, test_dst=test_dst, batch_node_interact_times=batch_node_interact_times, num_neighbors=num_dst_neighbors)
                 dst_last_update_time = torch.from_numpy(dst_last_update_time)
@@ -161,7 +162,7 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                                                                 **craftv5_inputs)
             else:
                 raise ValueError(f"Wrong value for model_name {args.model_name}!")
-            if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9']:
+            if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10']:
                 if args.loss in ['BPR']:
                     positive_probabilities = model[1](
                         input_1=batch_src_node_embeddings, input_2=batch_dst_node_embeddings).squeeze(dim=-1)
@@ -434,8 +435,7 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
             skip_connection=args.skip_connection,
             use_reciprocity=not args.no_reciprocity,
             use_history_memory=not args.no_history_memory,
-            use_covisit=not args.no_covisit,
-            scalar_encoding=args.scalar_encoding
+            use_covisit=not args.no_covisit
         )
     elif args.model_name in ['CRAFTV9', 'CRAFTv9', 'craftv9']:
         dynamic_backbone = CRAFTV9(
@@ -453,14 +453,34 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
             output_cat_time_intervals=args.output_cat_time_intervals,
             output_cat_repeat_times=args.output_cat_repeat_times,
             num_output_layer=args.num_output_layer,
+            emb_dropout_prob=args.emb_dropout_prob
+        )
+    elif args.model_name in ['CRAFTV10', 'CRAFTv10', 'craftv10']:
+        dynamic_backbone = CRAFTV10(
+            n_layers=args.num_layers,
+            n_heads=args.num_heads,
+            hidden_size=args.embedding_size,
+            hidden_dropout_prob=args.hidden_dropout,
+            attn_dropout_prob=args.attn_dropout_prob,
+            hidden_act=args.hidden_act,
+            layer_norm_eps=args.layer_norm_eps,
+            initializer_range=args.initializer_range,
+            n_nodes=args.item_size,
+            max_seq_length=args.num_neighbors,
+            device=args.device,
+            loss_type=args.loss,
+            use_pos=args.use_pos,
+            input_cat_time_intervals=args.input_cat_time_intervals,
+            output_cat_time_intervals=args.output_cat_time_intervals,
+            output_cat_repeat_times=args.output_cat_repeat_times,
+            num_output_layer=args.num_output_layer,
             emb_dropout_prob=args.emb_dropout_prob,
-            use_reciprocity=not args.no_reciprocity,
-            use_history_memory=not args.no_history_memory,
-            use_covisit=not args.no_covisit
+            skip_connection=args.skip_connection,
+            scalar_encoding=args.scalar_encoding
         )
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")
-    if args.model_name in ['CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9']:
+    if args.model_name in ['CRAFTV8', 'CRAFTv8', 'craftv8']:
         # the evidence indexes of the readouts; as with the neighbor samplers, training only sees the training edges
         # and evaluation sees all edges, and queries only count events before the prediction time
         num_ids = int(max(full_data.src_node_ids.max(), full_data.dst_node_ids.max())) + 1
@@ -481,9 +501,9 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
         link_predictor = MergeLayer(input_dim1=args.output_dim, input_dim2=args.output_dim, hidden_dim=args.output_dim, output_dim=1)
     elif args.merge in ['mul']:
         link_predictor = MulMergeLayer(scale=args.scale)
-    if args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'SASRec', 'SGNNHN']:
+    if args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'SASRec', 'SGNNHN']:
         dynamic_backbone.set_min_idx(src_min_idx=args.src_min_idx, dst_min_idx=args.dst_min_idx)
-    if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9']:
+    if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10']:
         model = nn.Sequential(dynamic_backbone, link_predictor)
     else:
         model = dynamic_backbone
