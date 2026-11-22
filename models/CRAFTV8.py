@@ -39,7 +39,7 @@ class CRAFTV8(EvidenceReadouts, torch.nn.Module):
                  input_cat_time_intervals=False, output_cat_time_intervals=True, output_cat_repeat_times=True,
                  num_output_layer=1, emb_dropout_prob=0.1, skip_connection=False, use_reciprocity=True,
                  use_history_memory=True, use_covisit=True, window_scales=(0.1, 1.0, 10.0, 100.0), num_decay_kernels=3,
-                 time_scale_momentum=0.99):
+                 time_scale_momentum=0.99, scalar_encoding='projected', scalar_scales=(0.01, 0.1, 1.0, 10.0, 100.0)):
         """
         the arguments up to skip_connection are CRAFT's, with the same meaning
         :param use_reciprocity: bool, whether the reciprocity readout feeds the correction
@@ -48,6 +48,12 @@ class CRAFTV8(EvidenceReadouts, torch.nn.Module):
         :param window_scales: tuple of float, the time windows of the memory as multiples of the running time scale
         :param num_decay_kernels: int, number of learned time scales of the recency-weighted closure count
         :param time_scale_momentum: float, momentum of the running scale of the elapsed times
+        :param scalar_encoding: str, how CRAFT's two scalar features (time since the candidate's last interaction, and
+        its repeat count) are encoded: 'projected' is CRAFT's LayerNorm(Linear(x)), which keeps whether the evidence
+        exists but collapses its magnitude once x is far from the scale of the bias; 'multiscale' first expands x into
+        log(1 + x / s) at several scales s (multiples of the running time scale for the elapsed time) and indicator
+        thresholds for the count, so the encoding keeps how recent and how frequent the evidence is
+        :param scalar_scales: tuple of float, the scales of the multiscale time encoding, as multiples of the time scale
         """
         super(CRAFTV8, self).__init__()
         self.n_layers = n_layers
@@ -67,6 +73,9 @@ class CRAFTV8(EvidenceReadouts, torch.nn.Module):
         self.emb_dropout_prob = emb_dropout_prob
         self.eps = 1e-6
         self.device = device
+        assert scalar_encoding in ('projected', 'multiscale'), f'unknown scalar_encoding {scalar_encoding}'
+        self.scalar_encoding = scalar_encoding
+        self.scalar_scales = tuple(scalar_scales)
 
         # ---- CRAFT backbone ----
         self.node_embedding = nn.Embedding(self.n_nodes + 1, self.hidden_size, padding_idx=0)
@@ -84,14 +93,18 @@ class CRAFTV8(EvidenceReadouts, torch.nn.Module):
             layer_norm_eps=self.layer_norm_eps,
         )
         output_dim = trm_input_dim
+        # the multiscale encoding expands the elapsed time into one log feature per scale plus a never-active flag, and
+        # the repeat count into its log and three indicator thresholds
+        time_input_dim = len(self.scalar_scales) + 1 if self.scalar_encoding == 'multiscale' else 1
+        repeat_input_dim = 4 if self.scalar_encoding == 'multiscale' else 1
         if self.output_cat_time_intervals or self.input_cat_time_intervals:
-            self.time_projection = MLP(num_layers=1, input_dim=1, hidden_dim=self.hidden_size,
+            self.time_projection = MLP(num_layers=1, input_dim=time_input_dim, hidden_dim=self.hidden_size,
                                        output_dim=self.hidden_size, dropout=self.hidden_dropout_prob,
                                        use_act=True, skip_connection=skip_connection)
         if self.output_cat_time_intervals:
             output_dim += self.hidden_size
         if self.output_cat_repeat_times:
-            self.repeat_times_projection = MLP(num_layers=1, input_dim=1, hidden_dim=self.hidden_size,
+            self.repeat_times_projection = MLP(num_layers=1, input_dim=repeat_input_dim, hidden_dim=self.hidden_size,
                                                output_dim=self.hidden_size, dropout=self.hidden_dropout_prob,
                                                use_act=True, skip_connection=skip_connection)
             output_dim += self.hidden_size
@@ -108,7 +121,10 @@ class CRAFTV8(EvidenceReadouts, torch.nn.Module):
                                     output_dim=1, dropout=self.hidden_dropout_prob, use_act=True,
                                     skip_connection=False)
             self.readout_gate = nn.Parameter(torch.zeros(1))
+        if self.num_readout_features > 0 or self.scalar_encoding == 'multiscale':
             self._init_time_scale()
+        if self.scalar_encoding == 'multiscale':
+            self.register_buffer('scalar_scales_tensor', torch.tensor(self.scalar_scales), persistent=False)
 
         self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
         self.LayerNorm_time_intervals = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
@@ -161,9 +177,20 @@ class CRAFTV8(EvidenceReadouts, torch.nn.Module):
         src_neighb_seq = (src_neighb_seq - self.dst_min_idx + 1).masked_fill(src_neighb_seq - self.dst_min_idx + 1 < 0, 0)
         test_dst = test_dst - self.dst_min_idx + 1
         valid_mask = src_neighb_seq != 0
+        if self.num_readout_features > 0 or self.scalar_encoding == 'multiscale':
+            src_elapsed = (cur_times.float().view(-1, 1) - neighbors_interact_times.float()).clamp(min=0.0)
+            time_scale = self._get_time_scale(src_elapsed, valid_mask)
 
         # ---- CRAFT: elapsed time of the candidate's last interaction ----
-        if self.output_cat_time_intervals:
+        if self.output_cat_time_intervals and self.scalar_encoding == 'multiscale':
+            never = (dst_last_update_times < -1).float()
+            since_last = (cur_times.view(-1, 1) - dst_last_update_times).float().clamp(min=0.0) * (1.0 - never)
+            expanded = torch.log1p(since_last.unsqueeze(-1) / (time_scale * self.scalar_scales_tensor))
+            expanded = torch.cat([expanded * (1.0 - never).unsqueeze(-1), never.unsqueeze(-1)], dim=-1)
+            dst_node_time_intervals_feat = self.time_projection(expanded.view(-1, expanded.shape[-1])).view(
+                batch_size, num_candidates, -1)
+            dst_node_time_intervals_feat = self.dropout(self.LayerNorm_time_intervals(dst_node_time_intervals_feat))
+        elif self.output_cat_time_intervals:
             # candidates with no past interaction get CRAFT's sentinel, written without a host synchronization
             dst_last_update_intervals = torch.where(dst_last_update_times < -1,
                                                     torch.full_like(dst_last_update_times, -100000),
@@ -180,7 +207,10 @@ class CRAFTV8(EvidenceReadouts, torch.nn.Module):
                              src_neighb_seq.view(batch_size, 1, max_seq_length)) & valid_mask.view(batch_size, 1, max_seq_length)
         if self.output_cat_repeat_times:
             repeat_times = candidate_matches.sum(dim=-1, keepdim=True).float()
-            repeat_times_feat = self.repeat_times_projection(repeat_times.view(-1, 1)).view(batch_size, num_candidates, -1)
+            if self.scalar_encoding == 'multiscale':
+                repeat_times = torch.cat([torch.log1p(repeat_times), (repeat_times >= 1).float(), (repeat_times >= 2).float(),
+                                          (repeat_times >= 5).float()], dim=-1)
+            repeat_times_feat = self.repeat_times_projection(repeat_times.view(-1, repeat_times.shape[-1])).view(batch_size, num_candidates, -1)
             repeat_times_feat = self.dropout(self.LayerNorm_repeat_times(repeat_times_feat))
 
         # ---- CRAFT: history representation ----
@@ -210,8 +240,6 @@ class CRAFTV8(EvidenceReadouts, torch.nn.Module):
 
         # ---- additive correction from the readouts ----
         if self.num_readout_features > 0:
-            src_elapsed = (cur_times.float().view(-1, 1) - neighbors_interact_times.float()).clamp(min=0.0)
-            time_scale = self._get_time_scale(src_elapsed, valid_mask)
             readout_features = self.evidence_features(candidate_matches, raw_src_neighb_seq, valid_mask, raw_test_dst,
                                                       cur_times, src_elapsed, time_scale, src_node_ids, src_is_sender)
             readout = self.readout_head(readout_features).squeeze(dim=-1)

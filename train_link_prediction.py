@@ -434,7 +434,8 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
             skip_connection=args.skip_connection,
             use_reciprocity=not args.no_reciprocity,
             use_history_memory=not args.no_history_memory,
-            use_covisit=not args.no_covisit
+            use_covisit=not args.no_covisit,
+            scalar_encoding=args.scalar_encoding
         )
     elif args.model_name in ['CRAFTV9', 'CRAFTv9', 'craftv9']:
         dynamic_backbone = CRAFTV9(
