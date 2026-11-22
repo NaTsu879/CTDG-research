@@ -41,7 +41,7 @@ class CRAFTV10(torch.nn.Module):
                  layer_norm_eps, initializer_range, n_nodes, max_seq_length, device, loss_type, use_pos=True,
                  input_cat_time_intervals=False, output_cat_time_intervals=True, output_cat_repeat_times=True,
                  num_output_layer=1, emb_dropout_prob=0.1, skip_connection=False, scalar_encoding='multiscale',
-                 scalar_scales=(0.01, 0.1, 1.0, 10.0, 100.0), time_scale_momentum=0.99):
+                 scalar_scales=(0.01, 0.1, 1.0, 10.0, 100.0), time_scale_momentum=0.99, history_pooling='attention'):
         """
         the arguments up to skip_connection are CRAFT's, with the same meaning
         :param scalar_encoding: str, 'multiscale' expands the elapsed time and the repeat count before the projection
@@ -49,9 +49,13 @@ class CRAFTV10(torch.nn.Module):
         :param scalar_scales: tuple of float, the scales of the elapsed-time expansion, as multiples of the running
         time scale
         :param time_scale_momentum: float, momentum of the running scale of the elapsed times
+        :param history_pooling: str, 'attention' is CRAFT's candidate-conditioned cross-attention over the history;
+        'mean' is the ablation without target-aware matching: the history is averaged without looking at the
+        candidate, and the candidate embedding is added to it, as the residual of the attention would
         """
         super(CRAFTV10, self).__init__()
         assert scalar_encoding in ('projected', 'multiscale'), f'unknown scalar_encoding {scalar_encoding}'
+        assert history_pooling in ('attention', 'mean'), f'unknown history_pooling {history_pooling}'
         assert not (input_cat_time_intervals and scalar_encoding == 'multiscale'), \
             'the multiscale encoding covers the candidate time feature; input_cat_time_intervals is not supported with it'
         self.n_layers = n_layers
@@ -70,6 +74,7 @@ class CRAFTV10(torch.nn.Module):
         self.output_cat_repeat_times = output_cat_repeat_times
         self.emb_dropout_prob = emb_dropout_prob
         self.scalar_encoding = scalar_encoding
+        self.history_pooling = history_pooling
         self.scalar_scales = tuple(scalar_scales)
         self.time_scale_momentum = time_scale_momentum
         self.eps = 1e-6
@@ -231,7 +236,12 @@ class CRAFTV10(torch.nn.Module):
         # ---- CRAFT: candidate-conditioned attention over the source's history ----
         attention_mask = self.get_attention_mask(
             torch.ones(batch_size, num_candidates, device=src_neighb_seq.device), mask_b=valid_mask)
-        context = self.cross_attention(test_dst_emb, attention_mask, input_emb, output_all_encoded_layers=False)[-1]
+        if self.history_pooling == 'attention':
+            context = self.cross_attention(test_dst_emb, attention_mask, input_emb, output_all_encoded_layers=False)[-1]
+        else:
+            # ablation: one summary of the history for all candidates, plus the candidate embedding
+            pooled = (input_emb * valid_mask.unsqueeze(-1).float()).sum(dim=1) / valid_mask.sum(dim=1, keepdim=True).clamp(min=1).float()
+            context = self.LayerNorm(pooled.unsqueeze(1) + test_dst_emb)
 
         output = context
         if self.output_cat_time_intervals:

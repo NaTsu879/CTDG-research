@@ -97,6 +97,7 @@ def get_link_prediction_args(is_evaluation: bool = False):
     parser.add_argument('--no_covisit', action='store_true', default=False, help='ablate the co-visit closure readout in CRAFTV8; with --no_reciprocity and --no_history_memory too, CRAFTV8 is identical to CRAFT')
     parser.add_argument('--covisit_window', type=int, default=20, help='largest number of interactions apart two visits of one source may be to count as a co-visit in CRAFTV8')
     parser.add_argument('--covisit_max_pairs', type=int, default=100000000, help='cap on the co-visits indexed by CRAFTV8; the window stops growing before it is exceeded, so the index fits in host memory')
+    parser.add_argument('--history_pooling', type=str, default='attention', choices=['attention', 'mean'], help="CRAFTV10's history reading: CRAFT's target-aware cross-attention, or a candidate-independent mean (the ablation without target-aware matching)")
     parser.add_argument('--scalar_encoding', type=str, default='multiscale', choices=['projected', 'multiscale'], help="how CRAFTV10 encodes the candidate's elapsed time and repeat count: 'multiscale' keeps their magnitude, 'projected' is CRAFT's LayerNorm(Linear(x)), which collapses it (the control)")
     parser.add_argument('--covisit_gpu_max_gb', type=float, default=4.0, help='largest size of the CRAFTV8 co-visit indexes (both splits) that is kept on the GPU; larger ones are queried on the CPU, which is much slower')
     try:

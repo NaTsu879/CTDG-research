@@ -476,7 +476,8 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
             num_output_layer=args.num_output_layer,
             emb_dropout_prob=args.emb_dropout_prob,
             skip_connection=args.skip_connection,
-            scalar_encoding=args.scalar_encoding
+            scalar_encoding=args.scalar_encoding,
+            history_pooling=args.history_pooling
         )
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")
