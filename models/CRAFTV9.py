@@ -7,42 +7,41 @@ from models.evidence_readouts import EvidenceReadouts
 
 class CRAFTV9(EvidenceReadouts, torch.nn.Module):
     """
-    CRAFTV9: a light target-aware matcher with explicit evidence, without CRAFT's transformer.
+    CRAFTV9: future link prediction as the intensity of a self- and mutually-exciting point process.
 
-    What is kept, and why
+    The idea
+    --------
+    A future link s -> d at time t is scored by how strongly the past excites it, as in a Hawkes process: each
+    past event raises the intensity of related future events, and the excitation decays with time. The excitations
+    travel along different short paths, and each kind of dataset is dominated by a different one:
+        self-excitation          s -> d happened before (repeats, over the whole history)       seen-dominant
+        reciprocal excitation    d -> s happened before (replies, follow-backs)                  directed graphs
+        collaborative excitation other users went from an item of s to d (co-visits)             unseen-dominant
+        latent excitation        each history item i of s excites d with a learned strength      both
+        base rate                d's popularity momentum, and a learned item bias                both
+    The first three and the base rate are the evidence readouts of CRAFTV8 (models.evidence_readouts), read by
+    binary searches on time-sorted indexes. The latent excitation is the learned part:
+        a(i, d) = softplus(<u_i, v_d> / sqrt(F) + b),   u_i = LN(e(i)) W_u,   v_d = LN(e(d)),
+        E_k(d) = log(1 + sum_l a(n_l, d) exp(-dt_l / tau_k)),   k = 1..K, with learned time scales tau_k,
+    plus the strongest single excitation max_l <u_{n_l}, v_d> / sqrt(F). The softplus is applied to every
+    (history item, candidate) pair before the sum, so the sum cannot be rewritten as one source vector dotted with
+    the candidate: each candidate is scored against each history item, without attention.
+
+    What it does not have
     ---------------------
-    Each candidate still attends over the source's recent history with its own softmax. A model that replaced this
-    per-candidate attention with a few history summaries shared by all candidates lost about 15 MRR points on uci,
-    so this is the part of CRAFT that does the work.
-
-    What is removed
-    ---------------
-    CRAFT runs the candidates through stacked transformer layers: query, key, value and output projections,
-    residual blocks and a feed-forward network of width 4F, at every layer. CRAFTV9 keeps one attention pass:
-        q_j = LN(e(d_j)) W_q,   k_l = LN(e(n_l) + p(l)),
-        a_jl = softmax_l( <q_j, k_l> / sqrt(F/h) - beta_h * log(1 + dt_l / tau) ),   c_j = sum_l a_jl k_l,
-    per head h, with a single query projection W_q (initialized to the identity) and no key, value or output
-    projection, no feed-forward block and no stacked layers. The learned per-head slope beta_h lets attention favor
-    recent history entries directly from their elapsed times dt_l.
-
-    What is added
-    -------------
-    The three readouts of CRAFTV8 (reciprocity, long-range memory, co-visit closure; see
-    models.evidence_readouts.EvidenceReadouts), read by binary searches on time-sorted indexes. In CRAFTV8 they
-    corrected CRAFT's logit from outside; here they are an input of the scorer, projected to F dimensions, so
-    the scorer can weigh the learned match against the explicit evidence for each candidate.
+    No attention: no softmax over the history, no context vector, no query, key, value or output projection, no
+    feed-forward block and no stacked layers. Time enters through decay kernels on the elapsed times, not through
+    position embeddings. CRAFT's candidate features (time since the candidate's last interaction, and its repeat
+    count in the window on seen-dominant datasets) are kept, as scalars instead of projected vectors.
 
     Scoring
     -------
-        s_j = MLP([c_j * q_j ; c_j ; time(d_j) ; repeat(d_j) ; evidence(d_j)])
-    where time(d_j) and repeat(d_j) are CRAFT's projections of the elapsed time since the candidate's last
-    interaction and of its repeat count in the window, and the MLP has hidden width F (CRAFT's output MLP is as
-    wide as its input).
+        s_j = MLP([E_1..E_K, max excitation, has history, candidate time features, repeat count, evidence]) + b_{d_j}
+    with a small MLP of hidden width F and a learned bias per candidate node.
 
-    Cost per batch: B q k F for the attention, B q F^2 for the query projection and the scorer, and B q k log P for
-    the readouts, against CRAFT's (B q F^2 + B k F^2 + B q k F) per layer, with a 4F-wide feed-forward network.
-    Training is CRAFT's: one negative per positive from the same collision-checked sampler, the same BPR/BCE
-    loss and per-dataset hyperparameters (num_layers is not used, since there are no stacked layers).
+    Cost per batch: B q k F for the pairwise excitations, B k F^2 for the history projection, and B q k log P for
+    the evidence readouts. Training is CRAFT's: one negative per positive from the same collision-checked
+    sampler, the same BPR/BCE loss and per-dataset hyperparameters (num_layers, num_heads and use_pos are not used).
     """
 
     def __init__(self, n_heads, hidden_size, hidden_dropout_prob, attn_dropout_prob, layer_norm_eps, initializer_range,
@@ -51,84 +50,68 @@ class CRAFTV9(EvidenceReadouts, torch.nn.Module):
                  use_history_memory=True, use_covisit=True, window_scales=(0.1, 1.0, 10.0, 100.0), num_decay_kernels=3,
                  time_scale_momentum=0.99):
         """
-        :param n_heads: int, number of attention heads; hidden_size must be divisible by it
+        :param n_heads: int, not used (no attention); kept so the constructor matches the other CRAFT variants
         :param hidden_size: int, F, the embedding size
-        :param hidden_dropout_prob: float, dropout of the projections and of the scorer
-        :param attn_dropout_prob: float, dropout of the attention weights
+        :param hidden_dropout_prob: float, dropout of the scorer
+        :param attn_dropout_prob: float, not used (no attention)
         :param layer_norm_eps: float
         :param initializer_range: float, std of the initial embeddings and linear weights
         :param n_nodes: int, number of candidate (destination-side) nodes
         :param max_seq_length: int, k, the number of history entries
         :param device: str
         :param loss_type: str, 'BPR' or 'BCE'
-        :param use_pos: bool, whether a learnable position embedding is added to the history entries
-        :param output_cat_time_intervals: bool, whether the elapsed time since the candidate's last interaction is used
+        :param use_pos: bool, not used (time enters through decay kernels)
+        :param output_cat_time_intervals: bool, whether the time since the candidate's last interaction is used
         :param output_cat_repeat_times: bool, whether the candidate's repeat count in the window is used
         :param num_output_layer: int, number of layers of the scorer MLP
         :param emb_dropout_prob: float, dropout of the embeddings
-        :param use_reciprocity: bool, whether the reciprocity readout feeds the scorer
-        :param use_history_memory: bool, whether the long-range memory readout feeds the scorer
-        :param use_covisit: bool, whether the co-visit closure readout feeds the scorer
+        :param use_reciprocity: bool, whether the reciprocal excitation feeds the scorer
+        :param use_history_memory: bool, whether the self-excitation and base-rate memory feed the scorer
+        :param use_covisit: bool, whether the collaborative excitation feeds the scorer
         :param window_scales: tuple of float, the time windows of the memory as multiples of the running time scale
-        :param num_decay_kernels: int, number of learned time scales of the recency-weighted closure count
+        :param num_decay_kernels: int, K, number of learned time scales of the latent and collaborative excitations
         :param time_scale_momentum: float, momentum of the running scale of the elapsed times
         """
         super(CRAFTV9, self).__init__()
-        assert hidden_size % n_heads == 0, f'hidden_size {hidden_size} must be divisible by n_heads {n_heads}'
-        self.n_heads = n_heads
         self.hidden_size = hidden_size
-        self.head_size = hidden_size // n_heads
         self.hidden_dropout_prob = hidden_dropout_prob
         self.layer_norm_eps = layer_norm_eps
         self.initializer_range = initializer_range
         self.n_nodes = n_nodes
         self.max_seq_length = max_seq_length
-        self.use_pos = use_pos
         self.output_cat_time_intervals = output_cat_time_intervals
         self.output_cat_repeat_times = output_cat_repeat_times
+        self.num_latent_kernels = num_decay_kernels
         self.eps = 1e-6
         self.device = device
 
-        # ---- light target-aware matching ----
+        # ---- latent excitation: a(i, d) = softplus(<u_i, v_d> / sqrt(F) + b) ----
         self.node_embedding = nn.Embedding(self.n_nodes + 1, self.hidden_size, padding_idx=0)
-        if self.use_pos:
-            self.position_embedding = nn.Embedding(self.max_seq_length, self.hidden_size)
-        self.query_projection = nn.Linear(self.hidden_size, self.hidden_size)
-        # per-head slope of the recency bias on the attention logits, starting from no bias
-        self.recency_slope = nn.Parameter(torch.zeros(self.n_heads))
-        self.attn_dropout = nn.Dropout(attn_dropout_prob)
-        scorer_dim = 2 * self.hidden_size
+        self.node_bias = nn.Embedding(self.n_nodes + 1, 1, padding_idx=0)
+        self.history_projection = nn.Linear(self.hidden_size, self.hidden_size)
+        self.excitation_bias = nn.Parameter(torch.zeros(1))
+        self.latent_log_tau = nn.Parameter(torch.linspace(math.log(0.1), math.log(10.0), self.num_latent_kernels))
+        self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
+        self.emb_dropout = nn.Dropout(emb_dropout_prob)
+        # latent excitations per kernel, the strongest single excitation, and whether there is any history
+        scorer_dim = self.num_latent_kernels + 2
 
-        # ---- CRAFT's candidate features ----
+        # ---- CRAFT's candidate features, as scalars ----
         if self.output_cat_time_intervals:
-            self.time_projection = MLP(num_layers=1, input_dim=1, hidden_dim=self.hidden_size,
-                                       output_dim=self.hidden_size, dropout=self.hidden_dropout_prob,
-                                       use_act=True, skip_connection=False)
-            self.LayerNorm_time_intervals = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
-            scorer_dim += self.hidden_size
+            # log time since the candidate's last interaction, and whether it never interacted
+            scorer_dim += 2
         if self.output_cat_repeat_times:
-            self.repeat_times_projection = MLP(num_layers=1, input_dim=1, hidden_dim=self.hidden_size,
-                                               output_dim=self.hidden_size, dropout=self.hidden_dropout_prob,
-                                               use_act=True, skip_connection=False)
-            self.LayerNorm_repeat_times = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
-            scorer_dim += self.hidden_size
+            scorer_dim += 1
 
-        # ---- explicit evidence, projected to F dimensions as an input of the scorer ----
+        # ---- reciprocal, self- and collaborative excitation, and the base rate ----
         self._init_readouts(use_reciprocity=use_reciprocity, use_history_memory=use_history_memory,
                             use_covisit=use_covisit, window_scales=window_scales,
                             num_decay_kernels=num_decay_kernels, time_scale_momentum=time_scale_momentum)
-        if self.num_readout_features > 0:
-            self.evidence_projection = nn.Linear(self.num_readout_features, self.hidden_size)
-            self.LayerNorm_evidence = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
-            scorer_dim += self.hidden_size
-        # the recency bias of the attention needs the time scale whether or not a readout is on
+        scorer_dim += self.num_readout_features
         self._init_time_scale()
 
         self.output_layer = MLP(num_layers=num_output_layer, input_dim=scorer_dim, hidden_dim=self.hidden_size,
                                 output_dim=1, dropout=self.hidden_dropout_prob, use_act=True, skip_connection=False)
-        self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
-        self.dropout = nn.Dropout(self.hidden_dropout_prob)
-        self.emb_dropout = nn.Dropout(emb_dropout_prob)
 
         self.loss_type = loss_type
         if self.loss_type == 'BCE':
@@ -138,9 +121,10 @@ class CRAFTV9(EvidenceReadouts, torch.nn.Module):
         else:
             self.loss_fct = nn.CrossEntropyLoss()
         self.apply(self._init_weights)
-        # start attention from plain embedding similarity: the query projection is the identity
         with torch.no_grad():
-            self.query_projection.weight.copy_(torch.eye(self.hidden_size))
+            # start from plain embedding similarity, and from no preference between candidates
+            self.history_projection.weight.copy_(torch.eye(self.hidden_size))
+            self.node_bias.weight.zero_()
 
     def set_min_idx(self, src_min_idx, dst_min_idx):
         self.src_min_idx = src_min_idx
@@ -154,6 +138,29 @@ class CRAFTV9(EvidenceReadouts, torch.nn.Module):
             module.weight.data.fill_(1.0)
         if isinstance(module, nn.Linear) and module.bias is not None:
             module.bias.data.zero_()
+
+    def latent_excitation(self, src_neighb_seq: torch.Tensor, test_dst: torch.Tensor, valid_mask: torch.Tensor,
+                          normalized_elapsed: torch.Tensor):
+        """
+        learned excitation of each candidate by the source's history items, decayed with time
+        :param src_neighb_seq: Tensor, shape (batch_size, max_seq_length), reindexed history, 0 is padding
+        :param test_dst: Tensor, shape (batch_size, num_candidates), reindexed candidates
+        :param valid_mask: Tensor, shape (batch_size, max_seq_length)
+        :param normalized_elapsed: Tensor, shape (batch_size, max_seq_length), elapsed time / time scale
+        :return: Tensor, shape (batch_size, num_candidates, num_latent_kernels + 2)
+        """
+        history = self.history_projection(self.emb_dropout(self.LayerNorm(self.node_embedding(src_neighb_seq))))
+        candidates = self.emb_dropout(self.LayerNorm(self.node_embedding(test_dst)))
+        # (batch_size, num_candidates, max_seq_length): one similarity per (candidate, history item) pair
+        similarity = torch.einsum('bcf,blf->bcl', candidates, history) / math.sqrt(self.hidden_size)
+        valid = valid_mask.unsqueeze(1)
+        excitation = nn.functional.softplus(similarity + self.excitation_bias) * valid.float()
+        tau = self.latent_log_tau.exp().clamp(min=1e-3)
+        decay = torch.exp(-normalized_elapsed.unsqueeze(-1) / tau.view(1, 1, -1)) * valid_mask.unsqueeze(-1).float()
+        decayed = torch.log1p(torch.einsum('bcl,blk->bck', excitation, decay))
+        has_history = valid_mask.any(dim=1).view(-1, 1, 1).float()
+        strongest = similarity.masked_fill(~valid, -1e4).amax(dim=-1, keepdim=True) * has_history
+        return torch.cat([decayed, strongest, has_history.expand_as(strongest)], dim=-1)
 
     def forward(self, src_neighb_seq, src_neighb_seq_len, neighbors_interact_times, cur_times, test_dst,
                 dst_last_update_times, src_node_ids=None, src_is_sender=None):
@@ -181,50 +188,27 @@ class CRAFTV9(EvidenceReadouts, torch.nn.Module):
         src_elapsed = (cur_times.float().view(-1, 1) - neighbors_interact_times.float()).clamp(min=0.0)
         time_scale = self._get_time_scale(src_elapsed, valid_mask)
 
-        # ---- light target-aware matching: one attention pass, per candidate and per head ----
-        query = self.emb_dropout(self.LayerNorm(self.node_embedding(test_dst)))
-        history = self.node_embedding(src_neighb_seq)
-        if self.use_pos:
-            position_ids = torch.arange(max_seq_length, dtype=torch.long, device=src_neighb_seq.device)
-            history = history + self.position_embedding(position_ids).unsqueeze(0)
-        history = self.emb_dropout(self.LayerNorm(history))
+        # ---- latent excitation ----
+        features = [self.latent_excitation(src_neighb_seq, test_dst, valid_mask, src_elapsed / time_scale)]
 
-        heads_query = self.query_projection(query).view(batch_size, num_candidates, self.n_heads, self.head_size)
-        heads_history = history.view(batch_size, max_seq_length, self.n_heads, self.head_size)
-        scores = torch.einsum('bchd,blhd->bhcl', heads_query, heads_history) / math.sqrt(self.head_size)
-        recency = torch.log1p(src_elapsed / time_scale).view(batch_size, 1, 1, max_seq_length)
-        scores = scores - self.recency_slope.view(1, -1, 1, 1) * recency
-        scores = scores.masked_fill(~valid_mask.view(batch_size, 1, 1, max_seq_length), -10000.0)
-        weights = self.attn_dropout(torch.softmax(scores, dim=-1))
-        context = torch.einsum('bhcl,blhd->bchd', weights, heads_history).reshape(batch_size, num_candidates, -1)
-        # a source with an empty history has nothing to attend to
-        context = context * valid_mask.any(dim=1).view(batch_size, 1, 1).float()
-        scorer_inputs = [context * query, context]
-
-        # ---- CRAFT's candidate features ----
+        # ---- CRAFT's candidate features, as scalars ----
         if self.output_cat_time_intervals:
-            # candidates with no past interaction get CRAFT's sentinel
-            dst_last_update_intervals = torch.where(dst_last_update_times < -1,
-                                                    torch.full_like(dst_last_update_times, -100000),
-                                                    cur_times.view(-1, 1) - dst_last_update_times)
-            time_feat = self.time_projection(dst_last_update_intervals.float().view(-1, 1)).view(
-                batch_size, num_candidates, -1)
-            scorer_inputs.append(self.dropout(self.LayerNorm_time_intervals(time_feat)))
+            never = (dst_last_update_times < -1).float()
+            since_last = ((cur_times.view(-1, 1) - dst_last_update_times).float().clamp(min=0.0) / time_scale) * (1.0 - never)
+            features += [torch.log1p(since_last).unsqueeze(-1), never.unsqueeze(-1)]
         candidate_matches = (test_dst.view(batch_size, num_candidates, 1) ==
                              src_neighb_seq.view(batch_size, 1, max_seq_length)) & valid_mask.view(batch_size, 1, max_seq_length)
         if self.output_cat_repeat_times:
-            repeat_times = candidate_matches.sum(dim=-1, keepdim=True).float()
-            repeat_feat = self.repeat_times_projection(repeat_times.view(-1, 1)).view(batch_size, num_candidates, -1)
-            scorer_inputs.append(self.dropout(self.LayerNorm_repeat_times(repeat_feat)))
+            features.append(torch.log1p(candidate_matches.sum(dim=-1, keepdim=True).float()))
 
-        # ---- explicit evidence ----
+        # ---- reciprocal, self- and collaborative excitation, and the base rate ----
         if self.num_readout_features > 0:
-            evidence = self.evidence_features(candidate_matches, raw_src_neighb_seq, valid_mask, raw_test_dst,
-                                              cur_times, src_elapsed, time_scale, src_node_ids, src_is_sender)
-            scorer_inputs.append(self.dropout(self.LayerNorm_evidence(self.evidence_projection(evidence))))
+            features.append(self.evidence_features(candidate_matches, raw_src_neighb_seq, valid_mask, raw_test_dst,
+                                                   cur_times, src_elapsed, time_scale, src_node_ids, src_is_sender))
 
-        scorer_input = torch.cat(scorer_inputs, dim=-1)
-        return self.output_layer(scorer_input.view(-1, scorer_input.shape[-1])).view(batch_size, num_candidates)
+        scorer_input = torch.cat(features, dim=-1)
+        logits = self.output_layer(scorer_input.view(-1, scorer_input.shape[-1])).view(batch_size, num_candidates)
+        return logits + self.node_bias(test_dst).squeeze(-1)
 
     def compute_scores(self, src_neighb_seq, src_neighb_seq_len, src_neighb_interact_times, cur_pred_times, test_dst,
                        dst_last_update_times, src_node_ids=None, src_is_sender=None):
