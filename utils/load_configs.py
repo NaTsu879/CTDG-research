@@ -281,7 +281,7 @@ def load_link_prediction_best_configs(args: argparse.Namespace):
     elif args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3',
                              'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5',
                              'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7',
-                             'CRAFTV8', 'CRAFTv8', 'craftv8']:
+                             'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9']:
         # the per-dataset budget reported for CRAFT, shared by every CRAFT-family model so that they are all
         # trained under the same settings:
         # (num_neighbors, hidden_dropout, attn_dropout_prob, emb_dropout_prob, num_layers, batch_size, embedding_size)
