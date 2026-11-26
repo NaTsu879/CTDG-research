@@ -660,6 +660,7 @@ if __name__ == "__main__":
         model = convert_to_gpu(model, device=args.device)
         for metric_name in test_metrics.keys():
             logger.info(f'test {metric_name}, {test_metrics[metric_name]:.8f}')
+        per_edge = {} if args.save_test_ranks else None
         test_metrics_multi_negs = evaluate_model_link_prediction_multi_negs( \
                 model_name=args.model_name, \
                 model=model, \
@@ -674,8 +675,15 @@ if __name__ == "__main__":
                 loss_type = args.loss, \
                 full_data=full_data, \
                 dataset_name=args.dataset_name, \
-                collision_check=args.collision_check)
+                collision_check=args.collision_check, \
+                per_edge=per_edge)
         test_metrics.update(test_metrics_multi_negs)
+        if per_edge is not None:
+            # the reciprocal rank of every test edge, next to the result json, for failure analyses
+            per_edge_folder = f"./saved_results/{args.dataset_name}/{args.model_name}"
+            os.makedirs(per_edge_folder, exist_ok=True)
+            np.savez(os.path.join(per_edge_folder, f"{args.save_model_name}_test_ranks.npz"),
+                     **{key: np.concatenate(values) for key, values in per_edge.items()})
         for metric_name in test_metrics.keys():
             logger.info(f'test {metric_name}, {test_metrics[metric_name]:.8f}')
 

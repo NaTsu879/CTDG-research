@@ -17,7 +17,7 @@ from utils.DataLoader import Data
 
 def evaluate_model_link_prediction_multi_negs(model_name: str, model: nn.Module, neighbor_sampler: NeighborSampler, evaluate_idx_data_loader: DataLoader,
                                    evaluate_neg_edge_sampler: NegativeEdgeSampler, evaluate_data: Data, loss_func: nn.Module, device: str = 'cpu',
-                                   num_neighbors: int = 20, time_gap: int = 2000, mode='test', num_negs=100, loss_type = 'BCE', full_data: Data = None, dataset_name: str = None, collision_check: bool = False, analyze_results: bool = False):
+                                   num_neighbors: int = 20, time_gap: int = 2000, mode='test', num_negs=100, loss_type = 'BCE', full_data: Data = None, dataset_name: str = None, collision_check: bool = False, analyze_results: bool = False, per_edge: dict = None):
     """
     evaluate models on the link prediction task
     :param model_name: str, name of the model
@@ -212,6 +212,12 @@ def evaluate_model_link_prediction_multi_negs(model_name: str, model: nn.Module,
             negative_probabilities = negative_probabilities.reshape(-1,num_negs)[to_test_mask]
             mrr_list = evaluator.eval(y_pred_pos=positive_probabilities, y_pred_neg=negative_probabilities)
             evaluate_metrics.extend(mrr_list)
+            if per_edge is not None:
+                # the reciprocal rank of every evaluated edge, for analyses of which edges a model gets wrong
+                per_edge.setdefault('src', []).append(batch_src_node_ids[to_test_mask])
+                per_edge.setdefault('dst', []).append(batch_dst_node_ids[to_test_mask])
+                per_edge.setdefault('time', []).append(batch_node_interact_times[to_test_mask])
+                per_edge.setdefault('mrr', []).append(np.asarray(mrr_list))
     return {'mrr': np.mean(evaluate_metrics)}
 
 
