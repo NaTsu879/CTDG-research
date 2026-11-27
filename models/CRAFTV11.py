@@ -1,7 +1,11 @@
 import math
+import numpy as np
 import torch
 from torch import nn
 from models.CRAFTV9 import CRAFTV9
+
+from models.evidence_readouts import count_events_before
+from utils.utils import build_event_index
 
 
 class CRAFTV11(CRAFTV9):
@@ -30,6 +34,23 @@ class CRAFTV11(CRAFTV9):
     embedding or bias for the candidate), 'none' (CRAFTV9). Training is CRAFT's: same negatives, loss and
     hyperparameters; the only extra input is each candidate's m most recent neighbours, read from the same neighbour
     sampler CRAFT already uses for the candidate's last update time.
+
+    Staleness simulation (staleness_simulation=True). A learned identity is never stale in training: the embedding of
+    every training node has been fitted to all of its training links, later ones included. So a model that combines it
+    with the refreshed part learns to trust it fully, and keeps trusting it for nodes that rose after training (on
+    Flickr the refreshed identity alone ranks those best, but the combination does not use it). The learned identity
+    (embedding and bias) is therefore scaled by the share of the candidate's links that existed at a cutoff,
+
+        kappa(d, t) = links of d before t_cut / links of d before t      (1 for a node with no links yet)
+
+    evaluation: t_cut is the real training cutoff, so kappa is how much of the candidate's current activity its learned
+                identity was fitted on;
+    training:   the cutoff is simulated: it is placed delta events before t, delta ~ Uniform(0, H) with H the number of
+                events after the real training cutoff (the evaluation horizon), so kappa follows the same law as in
+                evaluation. The horizon is counted in events rather than time because activity is not uniform in time
+                (on uci the evaluation period lasts three times longer than the training period).
+    Simulating the cutoff, rather than drawing kappa at random, matters: at test time the most-grown candidates are
+    the likely positives, and a random kappa would teach the scorer that a weak identity means a worse candidate.
     """
 
     REFRESH_MODES = ('sum', 'mean', 'refresh_only', 'none')
@@ -37,9 +58,11 @@ class CRAFTV11(CRAFTV9):
     def __init__(self, n_heads, hidden_size, hidden_dropout_prob, attn_dropout_prob, layer_norm_eps, initializer_range,
                  n_nodes, max_seq_length, device, loss_type, use_pos=True, output_cat_time_intervals=True,
                  output_cat_repeat_times=True, num_output_layer=2, emb_dropout_prob=0.1, num_decay_kernels=3,
-                 time_scale_momentum=0.99, identity_refresh='sum', num_refresh_neighbors=10, n_src_nodes=None):
+                 time_scale_momentum=0.99, identity_refresh='sum', num_refresh_neighbors=10, n_src_nodes=None,
+                 staleness_simulation=False):
         """
         :param identity_refresh: str, one of 'sum', 'mean', 'refresh_only', 'none'
+        :param staleness_simulation: bool, whether the learned identity is scaled by its staleness (see above)
         :param num_refresh_neighbors: int, m, the number of recent neighbours of each candidate
         :param n_src_nodes: int or None, number of source-side nodes when the graph is bipartite (the neighbours of a
             candidate are then sources, which get their own embedding table); None when sources and candidates share
@@ -69,6 +92,50 @@ class CRAFTV11(CRAFTV9):
                 # start from CRAFTV9: the refreshed part contributes nothing until it is learned
                 self.refresh_projection.weight.zero_()
                 self.refresh_bias.weight.zero_()
+        self.staleness_simulation = staleness_simulation
+        self.staleness_index = None
+        if staleness_simulation:
+            assert identity_refresh in ('sum', 'mean'), 'staleness simulation needs both a learned and a refreshed identity'
+
+    def set_staleness_index(self, train_data, full_data):
+        """
+        index when every node's links happened, to count those before any time, and record the training cutoff and the
+        evaluation horizon
+        :param train_data: Data, the training edges
+        :param full_data: Data, all edges
+        """
+        index = build_event_index(keys=np.concatenate([full_data.src_node_ids, full_data.dst_node_ids]),
+                                  times=np.concatenate([full_data.node_interact_times, full_data.node_interact_times]))
+        self.staleness_index = {key: torch.from_numpy(value).to(self.device) for key, value in index.items()}
+        train_end = float(np.max(train_data.node_interact_times))
+        # counting events strictly before the next representable time counts every training event
+        self.training_cutoff = float(np.nextafter(train_end, np.inf))
+        # the time of every event in order, and how many events come after the training cutoff
+        event_times = np.sort(full_data.node_interact_times.astype(np.float64))
+        self.event_times = torch.from_numpy(event_times).to(self.device)
+        self.staleness_horizon = int(len(event_times) - np.searchsorted(event_times, self.training_cutoff))
+
+    def staleness(self, raw_test_dst, cur_times):
+        """
+        kappa per candidate: links before the cutoff over links before t; the cutoff is simulated in training
+        :param raw_test_dst: Tensor, shape (batch_size, num_candidates), raw node ids
+        :param cur_times: Tensor, shape (batch_size, )
+        :return: Tensor, shape (batch_size, num_candidates)
+        """
+        assert self.staleness_index is not None, 'call set_staleness_index first'
+        nodes = raw_test_dst.long()
+        query_times = cur_times.double().view(-1, 1).expand_as(nodes)
+        if self.training:
+            # place the simulated cutoff delta events before the prediction time
+            position = torch.searchsorted(self.event_times, query_times.contiguous())
+            delta = (torch.rand(nodes.shape, device=nodes.device) * (self.staleness_horizon + 1)).long()
+            cutoff_times = self.event_times[(position - delta).clamp(min=0)]
+        else:
+            cutoff_times = torch.full_like(query_times, self.training_cutoff).minimum(query_times)
+        links_now, _ = count_events_before(self.staleness_index, nodes, query_times)
+        links_at_cutoff, _ = count_events_before(self.staleness_index, nodes, cutoff_times)
+        kappa = links_at_cutoff.float() / links_now.clamp(min=1).float()
+        return torch.where(links_now > 0, kappa, torch.ones_like(kappa))
 
     def refreshed_identity(self, dst_neighb_seq, dst_neighb_interact_times, cur_times, time_scale, batch_size,
                            num_candidates):
@@ -110,6 +177,7 @@ class CRAFTV11(CRAFTV9):
         """
         batch_size, max_seq_length = src_neighb_seq.shape
         num_candidates = test_dst.shape[1]
+        kappa = self.staleness(test_dst, cur_times) if self.staleness_simulation else None
 
         # ---- reindex into the candidate id space, as CRAFT does ----
         src_neighb_seq = (src_neighb_seq - self.dst_min_idx + 1).masked_fill(src_neighb_seq - self.dst_min_idx + 1 < 0, 0)
@@ -121,6 +189,9 @@ class CRAFTV11(CRAFTV9):
         # ---- candidate identity: static (learned) part plus the part refreshed from the stream ----
         static_emb = self.LayerNorm(self.node_embedding(test_dst))
         static_bias = self.node_bias(test_dst).squeeze(-1)
+        if kappa is not None:
+            # a stale learned identity counts for less
+            static_emb, static_bias = static_emb * kappa.unsqueeze(-1), static_bias * kappa
         if self.identity_refresh == 'none':
             candidate_emb, candidate_bias = static_emb, static_bias
         else:

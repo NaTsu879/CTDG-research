@@ -24,6 +24,7 @@ from models.CRAFTV7 import CRAFTV7
 from models.CRAFTV8 import CRAFTV8
 from models.CRAFTV9 import CRAFTV9
 from models.CRAFTV11 import CRAFTV11
+from models.CRAFTV12 import CRAFTV12
 from models.CRAFTV10 import CRAFTV10
 from models.modules import MergeLayer, MulMergeLayer, BPRLoss
 from utils.utils import set_random_seed, convert_to_gpu, get_parameter_sizes, create_optimizer
@@ -38,7 +39,7 @@ from models.SASRec import SASRec
 from models.SGNNHN import SGNNHN
 def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbor_sampler, train_neg_edge_sampler, train_data, optimizer, loss_func, full_neighbor_sampler, val_data, val_idx_data_loader, val_neg_edge_sampler, full_data):
         model.train()
-        if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'CRAFTV11', 'CRAFTv11', 'craftv11']:
+        if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'CRAFTV11', 'CRAFTv11', 'craftv11', 'CRAFTV12', 'CRAFTv12', 'craftv12']:
             model[0].set_neighbor_sampler(train_neighbor_sampler)
         
         if args.model_name in ['JODIE', 'DyRep', 'TGN']:
@@ -127,7 +128,7 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                 batch_dst_node_embeddings = dst_node_embeddings[:len(pos_item)]
                 batch_neg_dst_node_embeddings = dst_node_embeddings[len(pos_item):]
                 batch_neg_src_node_embeddings = batch_src_node_embeddings
-            elif args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'CRAFTV11', 'CRAFTv11', 'craftv11']:
+            elif args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'CRAFTV11', 'CRAFTv11', 'craftv11', 'CRAFTV12', 'CRAFTv12', 'craftv12']:
                 src_neighb_seq, src_neighb_edge_ids, src_neighb_interact_times = train_neighbor_sampler.get_historical_neighbors_left(node_ids=batch_src_node_ids, node_interact_times=batch_node_interact_times, num_neighbors=args.num_neighbors)
                 neighbor_num=(src_neighb_seq!=0).sum(axis=1)
                 if neighbor_num.sum() == 0:
@@ -167,7 +168,7 @@ def train_epoch(model, args, logger, epoch, train_idx_data_loader, train_neighbo
                                                                 **craftv5_inputs)
             else:
                 raise ValueError(f"Wrong value for model_name {args.model_name}!")
-            if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'CRAFTV11', 'CRAFTv11', 'craftv11']:
+            if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'CRAFTV11', 'CRAFTv11', 'craftv11', 'CRAFTV12', 'CRAFTv12', 'craftv12']:
                 if args.loss in ['BPR']:
                     positive_probabilities = model[1](
                         input_1=batch_src_node_embeddings, input_2=batch_dst_node_embeddings).squeeze(dim=-1)
@@ -460,6 +461,25 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
             num_output_layer=args.num_output_layer,
             emb_dropout_prob=args.emb_dropout_prob
         )
+    elif args.model_name in ['CRAFTV12', 'CRAFTv12', 'craftv12']:
+        # CRAFTV9 with test-time identity fold-in: same parameters and training as CRAFTV9
+        dynamic_backbone = CRAFTV12(
+            n_heads=args.num_heads,
+            hidden_size=args.embedding_size,
+            hidden_dropout_prob=args.hidden_dropout,
+            attn_dropout_prob=args.attn_dropout_prob,
+            layer_norm_eps=args.layer_norm_eps,
+            initializer_range=args.initializer_range,
+            n_nodes=args.item_size,
+            max_seq_length=args.num_neighbors,
+            device=args.device,
+            loss_type=args.loss,
+            use_pos=args.use_pos,
+            output_cat_time_intervals=args.output_cat_time_intervals,
+            output_cat_repeat_times=args.output_cat_repeat_times,
+            num_output_layer=args.num_output_layer,
+            emb_dropout_prob=args.emb_dropout_prob
+        )
     elif args.model_name in ['CRAFTV11', 'CRAFTv11', 'craftv11']:
         dynamic_backbone = CRAFTV11(
             n_heads=args.num_heads,
@@ -479,6 +499,7 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
             emb_dropout_prob=args.emb_dropout_prob,
             identity_refresh=args.identity_refresh,
             num_refresh_neighbors=args.num_refresh_neighbors,
+            staleness_simulation=args.staleness_simulation,
             # on bipartite graphs the neighbours of a candidate are sources, which get their own embeddings
             n_src_nodes=int(args.user_size) if args.src_min_idx != args.dst_min_idx else None
         )
@@ -508,6 +529,13 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
         )
     else:
         raise ValueError(f"Wrong value for model_name {args.model_name}!")
+    if args.model_name in ['CRAFTV12', 'CRAFTv12', 'craftv12']:
+        # every node's links (only those before a prediction time are read) and the training cutoff, for fold-in
+        dynamic_backbone.set_foldin_index(train_data=train_data, full_data=full_data)
+    if args.model_name in ['CRAFTV11', 'CRAFTv11', 'craftv11'] and args.staleness_simulation:
+        # staleness of a candidate's learned identity: its links in the training data (what the embedding was fitted
+        # on) against its links before the prediction time, counted on all edges (only earlier events are counted)
+        dynamic_backbone.set_staleness_index(train_data=train_data, full_data=full_data)
     if args.model_name in ['CRAFTV8', 'CRAFTv8', 'craftv8']:
         # the evidence indexes of the readouts; as with the neighbor samplers, training only sees the training edges
         # and evaluation sees all edges, and queries only count events before the prediction time
@@ -529,9 +557,9 @@ def get_model(args, train_data, node_raw_features, edge_raw_features, train_neig
         link_predictor = MergeLayer(input_dim1=args.output_dim, input_dim2=args.output_dim, hidden_dim=args.output_dim, output_dim=1)
     elif args.merge in ['mul']:
         link_predictor = MulMergeLayer(scale=args.scale)
-    if args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'CRAFTV11', 'CRAFTv11', 'craftv11', 'SASRec', 'SGNNHN']:
+    if args.model_name in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'CRAFTV11', 'CRAFTv11', 'craftv11', 'CRAFTV12', 'CRAFTv12', 'craftv12', 'SASRec', 'SGNNHN']:
         dynamic_backbone.set_min_idx(src_min_idx=args.src_min_idx, dst_min_idx=args.dst_min_idx)
-    if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'CRAFTV11', 'CRAFTv11', 'craftv11']:
+    if args.model_name not in ['CRAFT', 'CRAFTV2', 'CRAFTv2', 'craftv2', 'CRAFTV3', 'CRAFTv3', 'craftv3', 'CRAFTV4', 'CRAFTv4', 'craftv4', 'CRAFTV5', 'CRAFTv5', 'craftv5', 'MYMODEL', 'MyModel', 'mymodel', 'CRAFTV7', 'CRAFTv7', 'craftv7', 'CRAFTV8', 'CRAFTv8', 'craftv8', 'CRAFTV9', 'CRAFTv9', 'craftv9', 'CRAFTV10', 'CRAFTv10', 'craftv10', 'CRAFTV11', 'CRAFTv11', 'craftv11', 'CRAFTV12', 'CRAFTv12', 'craftv12']:
         model = nn.Sequential(dynamic_backbone, link_predictor)
     else:
         model = dynamic_backbone
@@ -567,6 +595,9 @@ if __name__ == "__main__":
         postfix += '_e'
     if args.use_node_feat:
         postfix+='_n'
+    if args.model_name in ['CRAFTV11', 'CRAFTv11', 'craftv11']:
+        # each CRAFTV11 variant saves to its own folder
+        postfix += f'_{args.identity_refresh}' + ('_stale' if args.staleness_simulation else '')
     if args.version is not None:
         args.save_model_name = f'{args.model_name}_seed{args.seed}_batchsize{args.batch_size}_num_neighbors{args.num_neighbors}_dropout{args.dropout}_sample_neighbor_strategy{args.sample_neighbor_strategy}_numlayers{args.num_layers}{postfix}_v{args.version}'
     else:
